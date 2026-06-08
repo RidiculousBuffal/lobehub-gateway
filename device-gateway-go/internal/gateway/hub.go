@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -12,6 +13,14 @@ type pendingRequest struct {
 	resolve func(rpcEnvelope)
 	timer   *time.Timer
 }
+
+type dispatchStatus int
+
+const (
+	dispatchOK dispatchStatus = iota
+	dispatchTimeout
+	dispatchOffline
+)
 
 type hub struct {
 	connections map[string]*connection
@@ -30,8 +39,8 @@ func newHub(userID string) *hub {
 
 func (h *hub) register(conn *connection) {
 	h.mu.Lock()
-	old := h.connections[conn.att.DeviceID]
-	h.connections[conn.att.DeviceID] = conn
+	old := h.connections[conn.att.ConnectionID]
+	h.connections[conn.att.ConnectionID] = conn
 	h.mu.Unlock()
 
 	if old != nil && old != conn {
@@ -41,8 +50,8 @@ func (h *hub) register(conn *connection) {
 
 func (h *hub) remove(conn *connection) {
 	h.mu.Lock()
-	if current := h.connections[conn.att.DeviceID]; current == conn {
-		delete(h.connections, conn.att.DeviceID)
+	if current := h.connections[conn.att.ConnectionID]; current == conn {
+		delete(h.connections, conn.att.ConnectionID)
 	}
 	h.mu.Unlock()
 	if conn.heartbeatTimer != nil {
@@ -81,32 +90,105 @@ func (h *hub) authenticatedConnections() []*connection {
 	return connections
 }
 
-func (h *hub) devices() []DeviceAttachment {
+func (h *hub) deviceCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	devices := make([]DeviceAttachment, 0, len(h.connections))
+	deviceIDs := map[string]struct{}{}
 	for _, conn := range h.connections {
 		if conn.att.Authenticated {
-			devices = append(devices, conn.att)
+			deviceIDs[conn.att.DeviceID] = struct{}{}
 		}
 	}
+	return len(deviceIDs)
+}
+
+func (h *hub) devices() []GatewayDevice {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	byDevice := map[string]*GatewayDevice{}
+	for _, conn := range h.connections {
+		if !conn.att.Authenticated {
+			continue
+		}
+		channel := DeviceConnection{
+			Channel:      conn.att.Channel,
+			ConnectedAt:  conn.att.ConnectedAt,
+			ConnectionID: conn.att.ConnectionID,
+		}
+		device := byDevice[conn.att.DeviceID]
+		if device == nil {
+			byDevice[conn.att.DeviceID] = &GatewayDevice{
+				Channels:    []DeviceConnection{channel},
+				ConnectedAt: conn.att.ConnectedAt,
+				DeviceID:    conn.att.DeviceID,
+				Hostname:    conn.att.Hostname,
+				Platform:    conn.att.Platform,
+			}
+			continue
+		}
+		device.Channels = append(device.Channels, channel)
+		if conn.att.ConnectedAt > device.ConnectedAt {
+			device.ConnectedAt = conn.att.ConnectedAt
+			device.Hostname = conn.att.Hostname
+			device.Platform = conn.att.Platform
+		}
+	}
+	devices := make([]GatewayDevice, 0, len(byDevice))
+	for _, device := range byDevice {
+		sort.SliceStable(device.Channels, func(i, j int) bool {
+			return device.Channels[i].ConnectedAt > device.Channels[j].ConnectedAt
+		})
+		devices = append(devices, *device)
+	}
+	sort.SliceStable(devices, func(i, j int) bool {
+		return devices[i].ConnectedAt > devices[j].ConnectedAt
+	})
 	return devices
 }
 
 func (h *hub) target(deviceID string) *connection {
 	connections := h.authenticatedConnections()
-	if len(connections) == 0 {
-		return nil
-	}
-	if deviceID == "" {
-		return connections[0]
-	}
+	candidates := make([]*connection, 0, len(connections))
 	for _, conn := range connections {
-		if conn.att.DeviceID == deviceID {
-			return conn
+		if deviceID == "" || conn.att.DeviceID == deviceID {
+			candidates = append(candidates, conn)
 		}
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return byDispatchPriority(candidates[i].att, candidates[j].att) < 0
+	})
+	return candidates[0]
+}
+
+func byDispatchPriority(a DeviceAttachment, b DeviceAttachment) int {
+	if byChannel := channelRank(a.Channel) - channelRank(b.Channel); byChannel != 0 {
+		return byChannel
+	}
+	if a.ConnectedAt > b.ConnectedAt {
+		return -1
+	}
+	if a.ConnectedAt < b.ConnectedAt {
+		return 1
+	}
+	return 0
+}
+
+func channelRank(channel string) int {
+	switch channel {
+	case "cli":
+		return 0
+	case "cli-dev":
+		return 1
+	case "desktop":
+		return 2
+	case "desktop-dev":
+		return 3
+	default:
+		return 4
+	}
 }
 
 func (h *hub) setPending(key string, timeout time.Duration, resolve func(rpcEnvelope), onTimeout func()) {
@@ -119,6 +201,18 @@ func (h *hub) setPending(key string, timeout time.Duration, resolve func(rpcEnve
 	h.mu.Lock()
 	h.pending[key] = pendingRequest{resolve: resolve, timer: timer}
 	h.mu.Unlock()
+}
+
+func (h *hub) clearPending(key string) {
+	h.mu.Lock()
+	pending, ok := h.pending[key]
+	if ok {
+		delete(h.pending, key)
+	}
+	h.mu.Unlock()
+	if ok {
+		pending.timer.Stop()
+	}
 }
 
 func (h *hub) resolvePending(msg rpcEnvelope) {
@@ -140,4 +234,20 @@ func (h *hub) resolvePending(msg rpcEnvelope) {
 	}
 	pending.timer.Stop()
 	pending.resolve(msg)
+}
+
+func (h *hub) dispatch(target *connection, key string, timeout time.Duration, payload map[string]any) (rpcEnvelope, dispatchStatus) {
+	resultCh := make(chan rpcEnvelope, 1)
+	timeoutCh := make(chan struct{}, 1)
+	h.setPending(key, timeout, func(msg rpcEnvelope) { resultCh <- msg }, func() { timeoutCh <- struct{}{} })
+	if err := target.writeJSON(payload); err != nil {
+		h.clearPending(key)
+		return rpcEnvelope{}, dispatchOffline
+	}
+	select {
+	case msg := <-resultCh:
+		return msg, dispatchOK
+	case <-timeoutCh:
+		return rpcEnvelope{}, dispatchTimeout
+	}
 }

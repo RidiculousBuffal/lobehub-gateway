@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -347,37 +348,88 @@ func (o *operation) fireWatchdog() {
 		o.mu.Unlock()
 		return
 	}
-	o.record.Status = StatusError
 	operationID := o.record.OperationID
+	o.mu.Unlock()
+
+	result, ok := o.callFinalizeAbandoned(operationID, "inactivity_watchdog")
+	abandoned := true
+	if ok {
+		if result.Abandoned != nil {
+			abandoned = *result.Abandoned
+		} else {
+			abandoned = boolValue(result.Found) && boolValue(result.Finalized)
+		}
+	}
+
+	o.mu.Lock()
+	if isTerminalStatus(o.record.Status) {
+		o.mu.Unlock()
+		return
+	}
+	if o.lastEventAt.IsZero() {
+		o.mu.Unlock()
+		return
+	}
+	currentTimeout := defaultIdleWatchdog
+	if inflightEventTypes[o.lastEventTyp] {
+		currentTimeout = defaultInflightWatchdog
+	}
+	if time.Since(o.lastEventAt) < currentTimeout {
+		o.scheduleWatchdogLocked()
+		o.mu.Unlock()
+		return
+	}
 	id := o.nextEventIDLocked()
-	msg := map[string]any{"id": id, "status": StatusError, "type": "status_change"}
+	var msg map[string]any
+	if abandoned {
+		o.record.Status = StatusError
+		msg = map[string]any{"id": id, "status": StatusError, "type": "status_change"}
+	} else {
+		o.record.Status = StatusCompleted
+		msg = map[string]any{"id": id, "summary": watchdogSummary(idle), "type": "session_complete"}
+	}
 	o.bufferLocked(id, msg)
 	connections := o.authenticatedConnectionsLocked()
 	o.scheduleCleanupLocked()
 	o.mu.Unlock()
 	broadcast(connections, msg)
-	go o.callFinalizeAbandoned(operationID, "inactivity_watchdog")
 }
 
-func (o *operation) callFinalizeAbandoned(operationID string, reason string) {
+func (o *operation) callFinalizeAbandoned(operationID string, reason string) (finalizeAbandonedResult, bool) {
 	if operationID == "" {
-		return
+		return finalizeAbandonedResult{}, false
 	}
 	body, _ := json.Marshal(map[string]string{"operationId": operationID, "reason": reason})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeBaseURL(o.server.cfg.LobeAPIBaseURL)+"/api/agent/finalize-abandoned", bytes.NewReader(body))
 	if err != nil {
-		return
+		return finalizeAbandonedResult{}, false
 	}
 	req.Header.Set("Authorization", "Bearer "+o.server.cfg.ServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return
+		return finalizeAbandonedResult{}, false
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return finalizeAbandonedResult{}, false
+	}
+	var result finalizeAbandonedResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return finalizeAbandonedResult{}, false
+	}
+	return result, true
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
+}
+
+func watchdogSummary(idle time.Duration) string {
+	return fmt.Sprintf("Operation idle for %ds with no events from agent-runtime — presumed killed mid-flight", int(idle.Seconds()+0.5))
 }
 
 func (o *operation) forwardToolResult(msg toolResultMessage) {

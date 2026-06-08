@@ -16,11 +16,13 @@ The original Cloudflare Worker Device Gateway remains the reference implementati
 ## Endpoints
 
 - `GET /health` returns `OK`
-- `GET /ws?userId=&deviceId=&hostname=&platform=` upgrades a device WebSocket
+- `GET /ws?userId=&deviceId=&connectionId=&channel=&hostname=&platform=` upgrades a device WebSocket
 - `POST /api/device/status`
 - `POST /api/device/devices`
+- `POST /api/device/message-api`
 - `POST /api/device/tool-call`
 - `POST /api/device/system-info`
+- `POST /api/device/rpc`
 - `POST /api/device/agent/run`
 
 All `/api/device/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>` and a JSON body containing `userId`.

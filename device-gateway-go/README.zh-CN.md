@@ -16,11 +16,13 @@
 ## 接口
 
 - `GET /health` 返回 `OK`
-- `GET /ws?userId=&deviceId=&hostname=&platform=` 升级为设备 WebSocket 连接
+- `GET /ws?userId=&deviceId=&connectionId=&channel=&hostname=&platform=` 升级为设备 WebSocket 连接
 - `POST /api/device/status`
 - `POST /api/device/devices`
+- `POST /api/device/message-api`
 - `POST /api/device/tool-call`
 - `POST /api/device/system-info`
+- `POST /api/device/rpc`
 - `POST /api/device/agent/run`
 
 所有 `/api/device/*` 接口都需要 `Authorization: Bearer <SERVICE_TOKEN>`，并且 JSON 请求体中必须包含 `userId`。

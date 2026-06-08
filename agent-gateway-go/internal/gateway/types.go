@@ -103,3 +103,9 @@ type agentRuntimeEndData struct {
 	Reason       string `json:"reason,omitempty"`
 	ReasonDetail string `json:"reasonDetail,omitempty"`
 }
+
+type finalizeAbandonedResult struct {
+	Abandoned *bool `json:"abandoned,omitempty"`
+	Finalized *bool `json:"finalized,omitempty"`
+	Found     *bool `json:"found,omitempty"`
+}
