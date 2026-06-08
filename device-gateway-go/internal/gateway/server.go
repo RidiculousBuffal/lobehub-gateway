@@ -236,6 +236,10 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request, body d
 }
 
 func (s *Server) handleRPC(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
+	if strings.TrimSpace(body.Method) == "" {
+		writeText(w, http.StatusBadRequest, "Missing method")
+		return
+	}
 	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
@@ -304,6 +308,10 @@ func (s *Server) handleMessageAPI(w http.ResponseWriter, _ *http.Request, body d
 }
 
 func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
+	if strings.TrimSpace(body.OperationID) == "" {
+		writeText(w, http.StatusBadRequest, "Missing operationId")
+		return
+	}
 	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})

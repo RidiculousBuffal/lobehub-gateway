@@ -93,6 +93,28 @@ func TestHTTPAuthAndOfflineResponses(t *testing.T) {
 	assertJSON(t, res, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 }
 
+func TestDeviceAPIRequiredFields(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	res := postJSON(t, httpSrv.URL+"/api/device/rpc", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusBadRequest)
+	assertBody(t, res, "Missing method")
+
+	res = postJSON(t, httpSrv.URL+"/api/device/rpc", "service-token", `{"userId":"u1","method":"   "}`)
+	assertStatus(t, res, http.StatusBadRequest)
+	assertBody(t, res, "Missing method")
+
+	res = postJSON(t, httpSrv.URL+"/api/device/agent/run", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusBadRequest)
+	assertBody(t, res, "Missing operationId")
+
+	res = postJSON(t, httpSrv.URL+"/api/device/agent/run", "service-token", `{"userId":"u1","operationId":"   "}`)
+	assertStatus(t, res, http.StatusBadRequest)
+	assertBody(t, res, "Missing operationId")
+}
+
 func TestWebSocketServiceTokenHeartbeatAndRPC(t *testing.T) {
 	srv := NewServer(Config{ServiceToken: "service-token"})
 	srv.authTimeout = time.Second
