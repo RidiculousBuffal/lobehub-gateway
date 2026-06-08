@@ -56,7 +56,7 @@ func verifyAPIKey(ctx context.Context, serverURL string, token string) (string, 
 		return "", err
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api/v1/users/me"
-	parsed.RawQuery = ""
+	parsed.RawQuery = "includeCount=0"
 	parsed.Fragment = ""
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -147,8 +147,12 @@ func (a *authResolver) verifyJWT(tokenString string) (string, error) {
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return "", err
 	}
-	if exp, ok := claims["exp"].(float64); ok && int64(exp) < time.Now().Unix() {
-		return "", errors.New("token is expired")
+	now := float64(time.Now().Unix())
+	if exp, ok := claims["exp"].(float64); ok && now >= exp {
+		return "", errors.New(`"exp" claim timestamp check failed`)
+	}
+	if nbf, ok := claims["nbf"].(float64); ok && now < nbf {
+		return "", errors.New(`"nbf" claim timestamp check failed`)
 	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {

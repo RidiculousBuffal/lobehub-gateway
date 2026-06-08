@@ -115,7 +115,7 @@ func (c *connection) readLoop(auth *authResolver, heartbeatTimeout time.Duration
 			c.hub.recordHeartbeat(c)
 			c.resetHeartbeatTimer(heartbeatTimeout)
 			_ = c.writeJSON(map[string]string{"type": "heartbeat_ack"})
-		case "tool_call_response", "system_info_response", "agent_run_ack":
+		case "tool_call_response", "message_api_response", "system_info_response", "rpc_response", "agent_run_ack":
 			var msg rpcEnvelope
 			if err := json.Unmarshal(payload, &msg); err == nil {
 				c.hub.resolvePending(msg)

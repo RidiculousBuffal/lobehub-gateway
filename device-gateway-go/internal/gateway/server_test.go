@@ -3,11 +3,16 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"crypto"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -50,15 +55,40 @@ func TestHTTPAuthAndOfflineResponses(t *testing.T) {
 	assertStatus(t, res, http.StatusOK)
 	assertJSON(t, res, map[string]any{"deviceCount": float64(0), "online": false})
 
+	req, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/device/status", strings.NewReader(`{"userId":"u1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer service-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertStatus(t, res, http.StatusOK)
+	assertJSON(t, res, map[string]any{"deviceCount": float64(0), "online": false})
+
+	res = postJSON(t, httpSrv.URL+"/api/device/unknown", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusNotFound)
+	assertBody(t, res, "404 page not found")
+
 	res = postJSON(t, httpSrv.URL+"/api/device/tool-call", "service-token", `{"userId":"u1","toolCall":{"identifier":"x"}}`)
 	assertStatus(t, res, http.StatusServiceUnavailable)
-	assertJSON(t, res, map[string]any{"content": "Desktop device offline", "error": "DEVICE_OFFLINE", "success": false})
+	assertJSON(t, res, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 
 	res = postJSON(t, httpSrv.URL+"/api/device/system-info", "service-token", `{"userId":"u1"}`)
 	assertStatus(t, res, http.StatusServiceUnavailable)
 	assertJSON(t, res, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 
 	res = postJSON(t, httpSrv.URL+"/api/device/agent/run", "service-token", `{"userId":"u1","operationId":"op"}`)
+	assertStatus(t, res, http.StatusServiceUnavailable)
+	assertJSON(t, res, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
+
+	res = postJSON(t, httpSrv.URL+"/api/device/message-api", "service-token", `{"userId":"u1","api":{"platform":"imessage","apiName":"sendText","payload":{}}}`)
+	assertStatus(t, res, http.StatusServiceUnavailable)
+	assertJSON(t, res, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
+
+	res = postJSON(t, httpSrv.URL+"/api/device/rpc", "service-token", `{"userId":"u1","method":"initWorkspace"}`)
 	assertStatus(t, res, http.StatusServiceUnavailable)
 	assertJSON(t, res, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 }
@@ -82,10 +112,10 @@ func TestWebSocketServiceTokenHeartbeatAndRPC(t *testing.T) {
 	res := postJSON(t, httpSrv.URL+"/api/device/devices", "service-token", `{"userId":"u1"}`)
 	assertStatus(t, res, http.StatusOK)
 	var devicesBody struct {
-		Devices []DeviceAttachment `json:"devices"`
+		Devices []GatewayDevice `json:"devices"`
 	}
 	decodeJSON(t, res, &devicesBody)
-	if len(devicesBody.Devices) != 1 || devicesBody.Devices[0].DeviceID != "d1" || !devicesBody.Devices[0].Authenticated {
+	if len(devicesBody.Devices) != 1 || devicesBody.Devices[0].DeviceID != "d1" || len(devicesBody.Devices[0].Channels) != 1 {
 		t.Fatalf("unexpected devices body: %+v", devicesBody)
 	}
 
@@ -121,7 +151,7 @@ func TestWebSocketServiceTokenHeartbeatAndRPC(t *testing.T) {
 	}
 }
 
-func TestWebSocketAuthTimeoutAndReplacement(t *testing.T) {
+func TestWebSocketAuthTimeoutAndConnectionIDReplacement(t *testing.T) {
 	srv := NewServer(Config{ServiceToken: "service-token"})
 	srv.authTimeout = 50 * time.Millisecond
 	httpSrv := httptest.NewServer(srv.Routes())
@@ -137,16 +167,165 @@ func TestWebSocketAuthTimeoutAndReplacement(t *testing.T) {
 		t.Fatalf("unexpected close: %d %q", code, reason)
 	}
 
-	first := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1")
+	first := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1&connectionId=conn-1")
 	defer first.close()
 	first.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
 	assertWSJSON(t, first, map[string]any{"type": "auth_success"})
 
-	second := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1")
+	second := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1&connectionId=conn-1")
 	defer second.close()
 	code, reason = first.readClose(t)
 	if code != wsCloseNormal || reason != "Replaced by new connection" {
 		t.Fatalf("unexpected replacement close: %d %q", code, reason)
+	}
+}
+
+func TestWebSocketJWTClaimValidation(t *testing.T) {
+	jwks, signJWT := testJWTSigner(t)
+	srv := NewServer(Config{JWKSPublicKey: jwks, ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	fresh := dialTestWS(t, httpSrv.URL, "/ws?userId=jwt-user")
+	defer fresh.close()
+	fresh.sendJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(time.Minute), time.Now().Add(-time.Minute)), "tokenType": "jwt"})
+	assertWSJSON(t, fresh, map[string]any{"type": "auth_success"})
+
+	expired := dialTestWS(t, httpSrv.URL, "/ws?userId=jwt-user")
+	defer expired.close()
+	expired.sendJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(-time.Minute), time.Now().Add(-2*time.Minute)), "tokenType": "jwt"})
+	msg := expired.readJSON(t)
+	if msg["type"] != "auth_failed" || msg["reason"] != `"exp" claim timestamp check failed` {
+		t.Fatalf("expected expired jwt auth_failed, got %#v", msg)
+	}
+	if code, reason := expired.readClose(t); code != wsClosePolicy || reason != `"exp" claim timestamp check failed` {
+		t.Fatalf("unexpected expired jwt close: %d %q", code, reason)
+	}
+
+	notYetActive := dialTestWS(t, httpSrv.URL, "/ws?userId=jwt-user")
+	defer notYetActive.close()
+	notYetActive.sendJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(time.Minute), time.Now().Add(time.Minute)), "tokenType": "jwt"})
+	msg = notYetActive.readJSON(t)
+	if msg["type"] != "auth_failed" || msg["reason"] != `"nbf" claim timestamp check failed` {
+		t.Fatalf("expected nbf auth_failed, got %#v", msg)
+	}
+	if code, reason := notYetActive.readClose(t); code != wsClosePolicy || reason != `"nbf" claim timestamp check failed` {
+		t.Fatalf("unexpected nbf jwt close: %d %q", code, reason)
+	}
+}
+
+func TestMessageAPIAndGenericRPC(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	ws := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1&connectionId=conn-1")
+	defer ws.close()
+	ws.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, ws, map[string]any{"type": "auth_success"})
+
+	messageDone := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/message-api", "service-token", `{"userId":"u1","deviceId":"d1","api":{"platform":"imessage","apiName":"sendText","payload":{"message":"hello"}}}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		messageDone <- body
+	}()
+	messageReq := ws.readJSON(t)
+	if messageReq["type"] != "message_api_request" || messageReq["requestId"] == "" {
+		t.Fatalf("unexpected message api request: %#v", messageReq)
+	}
+	ws.sendJSON(t, map[string]any{
+		"type":      "message_api_response",
+		"requestId": messageReq["requestId"],
+		"result": map[string]any{
+			"content": `{"guid":"sent-1"}`,
+			"success": true,
+		},
+	})
+	if body := <-messageDone; body["success"] != true || body["content"] != `{"guid":"sent-1"}` {
+		t.Fatalf("unexpected message api response: %#v", body)
+	}
+
+	rpcDone := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/rpc", "service-token", `{"userId":"u1","deviceId":"d1","method":"initWorkspace","params":{"scope":"/proj"}}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		rpcDone <- body
+	}()
+	rpcReq := ws.readJSON(t)
+	if rpcReq["type"] != "rpc_request" || rpcReq["method"] != "initWorkspace" || rpcReq["requestId"] == "" {
+		t.Fatalf("unexpected rpc request: %#v", rpcReq)
+	}
+	ws.sendJSON(t, map[string]any{
+		"type":      "rpc_response",
+		"requestId": rpcReq["requestId"],
+		"result": map[string]any{
+			"data":    map[string]any{"instructions": []any{}},
+			"success": true,
+		},
+	})
+	if body := <-rpcDone; body["success"] != true || body["data"] == nil {
+		t.Fatalf("unexpected rpc response: %#v", body)
+	}
+}
+
+func TestConnectionIDChannelCoexistenceAndPriority(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	desktop := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=machine-a&connectionId=desktop-1&channel=desktop")
+	defer desktop.close()
+	desktop.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, desktop, map[string]any{"type": "auth_success"})
+
+	cli := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=machine-a&connectionId=cli-1&channel=cli")
+	defer cli.close()
+	cli.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, cli, map[string]any{"type": "auth_success"})
+
+	res := postJSON(t, httpSrv.URL+"/api/device/status", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusOK)
+	assertJSON(t, res, map[string]any{"deviceCount": float64(1), "online": true})
+
+	res = postJSON(t, httpSrv.URL+"/api/device/devices", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusOK)
+	var devicesBody struct {
+		Devices []GatewayDevice `json:"devices"`
+	}
+	decodeJSON(t, res, &devicesBody)
+	if len(devicesBody.Devices) != 1 || len(devicesBody.Devices[0].Channels) != 2 {
+		t.Fatalf("unexpected devices body: %+v", devicesBody)
+	}
+
+	resultCh := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/tool-call", "service-token", `{"userId":"u1","deviceId":"machine-a","toolCall":{"identifier":"builtin","apiName":"echo","arguments":"{}"},"timeout":5000}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		resultCh <- body
+	}()
+
+	request := cli.readJSON(t)
+	if request["type"] != "tool_call_request" {
+		t.Fatalf("expected cli to receive tool call, got %#v", request)
+	}
+	wsExpectNoMessage(t, desktop, 100*time.Millisecond)
+	cli.sendJSON(t, map[string]any{
+		"type":      "tool_call_response",
+		"requestId": request["requestId"],
+		"result":    map[string]any{"content": "from cli", "success": true},
+	})
+	if body := <-resultCh; body["content"] != "from cli" {
+		t.Fatalf("unexpected tool-call response: %#v", body)
 	}
 }
 
@@ -264,6 +443,51 @@ func base64Std(value []byte) string {
 	return out.String()
 }
 
+func testJWTSigner(t *testing.T) (string, func(string, time.Time, time.Time) string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exponent := big.NewInt(int64(key.PublicKey.E)).Bytes()
+	jwksBody := map[string]any{
+		"keys": []map[string]string{{
+			"alg": "RS256",
+			"e":   base64.RawURLEncoding.EncodeToString(exponent),
+			"kty": "RSA",
+			"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		}},
+	}
+	jwks, err := json.Marshal(jwksBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(jwks), func(sub string, exp time.Time, nbf time.Time) string {
+		t.Helper()
+		header, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"exp": exp.Unix(),
+			"iat": time.Now().Unix(),
+			"nbf": nbf.Unix(),
+			"sub": sub,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+		sum := sha256.Sum256([]byte(signingInput))
+		sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+	}
+}
+
 func (w *testWS) sendJSON(t *testing.T, value any) {
 	t.Helper()
 	payload, err := json.Marshal(value)
@@ -298,6 +522,17 @@ func (w *testWS) readClose(t *testing.T) (int, string) {
 	return int(binary.BigEndian.Uint16(payload[:2])), string(payload[2:])
 }
 
+func wsExpectNoMessage(t *testing.T, ws *testWS, timeout time.Duration) {
+	t.Helper()
+	_ = ws.conn.SetReadDeadline(time.Now().Add(timeout))
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(ws.br, header); err == nil {
+		t.Fatalf("expected no websocket message, got frame header %#v", header)
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("expected read timeout while waiting for no message, got %v", err)
+	}
+}
+
 func (w *testWS) writeFrame(t *testing.T, opcode byte, payload []byte) {
 	t.Helper()
 	mask := [4]byte{1, 2, 3, 4}
@@ -305,6 +540,8 @@ func (w *testWS) writeFrame(t *testing.T, opcode byte, payload []byte) {
 	length := len(payload)
 	if length < 126 {
 		header = append(header, 0x80|byte(length))
+	} else if length <= 0xffff {
+		header = append(header, 0x80|126, byte(length>>8), byte(length))
 	} else {
 		t.Fatalf("test payload too large: %d", length)
 	}

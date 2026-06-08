@@ -13,8 +13,15 @@ import (
 )
 
 const (
-	defaultAuthTimeout      = 10 * time.Second
-	defaultHeartbeatTimeout = 90 * time.Second
+	defaultAuthTimeout          = 10 * time.Second
+	defaultHeartbeatTimeout     = 90 * time.Second
+	defaultToolCallTimeout      = 30 * time.Second
+	minToolCallTimeout          = 5 * time.Second
+	toolCallTimeoutPadding      = 15 * time.Second
+	defaultSystemInfoTimeout    = 10 * time.Second
+	defaultDeviceRPCTimeout     = 10 * time.Second
+	defaultDeviceMessageTimeout = 30 * time.Second
+	defaultAgentRunTimeout      = 10 * time.Second
 )
 
 type Server struct {
@@ -42,11 +49,7 @@ func (s *Server) Routes() http.Handler {
 		_, _ = w.Write([]byte("OK"))
 	})
 	mux.HandleFunc("GET /ws", s.handleWebSocket)
-	mux.HandleFunc("POST /api/device/status", s.withServiceAuth(s.handleStatus))
-	mux.HandleFunc("POST /api/device/devices", s.withServiceAuth(s.handleDevices))
-	mux.HandleFunc("POST /api/device/tool-call", s.withServiceAuth(s.handleToolCall))
-	mux.HandleFunc("POST /api/device/system-info", s.withServiceAuth(s.handleSystemInfo))
-	mux.HandleFunc("POST /api/device/agent/run", s.withServiceAuth(s.handleAgentRun))
+	mux.HandleFunc("/api/device/", s.withServiceAuth(s.handleDeviceAPI))
 	return mux
 }
 
@@ -105,7 +108,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn := &connection{
 		att: DeviceAttachment{
 			Authenticated: false,
+			Channel:       r.URL.Query().Get("channel"),
 			ConnectedAt:   now,
+			ConnectionID:  defaultString(r.URL.Query().Get("connectionId"), defaultString(r.URL.Query().Get("deviceId"), "unknown")),
 			DeviceID:      defaultString(r.URL.Query().Get("deviceId"), "unknown"),
 			Hostname:      r.URL.Query().Get("hostname"),
 			LastHeartbeat: now,
@@ -120,9 +125,50 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go conn.readLoop(s.auth, s.heartbeatTimeout)
 }
 
+func (s *Server) handleDeviceAPI(w http.ResponseWriter, r *http.Request, body deviceHTTPBody) {
+	switch r.URL.Path {
+	case "/api/device/status":
+		s.handleStatus(w, r, body)
+	case "/api/device/devices":
+		s.handleDevices(w, r, body)
+	case "/api/device/message-api":
+		if r.Method == http.MethodPost {
+			s.handleMessageAPI(w, r, body)
+			return
+		}
+		writeText(w, http.StatusNotFound, "404 page not found")
+	case "/api/device/tool-call":
+		if r.Method == http.MethodPost {
+			s.handleToolCall(w, r, body)
+			return
+		}
+		writeText(w, http.StatusNotFound, "404 page not found")
+	case "/api/device/system-info":
+		if r.Method == http.MethodPost {
+			s.handleSystemInfo(w, r, body)
+			return
+		}
+		writeText(w, http.StatusNotFound, "404 page not found")
+	case "/api/device/rpc":
+		if r.Method == http.MethodPost {
+			s.handleRPC(w, r, body)
+			return
+		}
+		writeText(w, http.StatusNotFound, "404 page not found")
+	case "/api/device/agent/run":
+		if r.Method == http.MethodPost {
+			s.handleAgentRun(w, r, body)
+			return
+		}
+		writeText(w, http.StatusNotFound, "404 page not found")
+	default:
+		writeText(w, http.StatusNotFound, "404 page not found")
+	}
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
 	connections := s.hub(body.UserID).authenticatedConnections()
-	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": len(connections), "online": len(connections) > 0})
+	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": s.hub(body.UserID).deviceCount(), "online": len(connections) > 0})
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
@@ -132,7 +178,7 @@ func (s *Server) handleDevices(w http.ResponseWriter, _ *http.Request, body devi
 func (s *Server) handleToolCall(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
 	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "Desktop device offline", "error": "DEVICE_OFFLINE", "success": false})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 		return
 	}
 	target := h.target(body.DeviceID)
@@ -140,19 +186,27 @@ func (s *Server) handleToolCall(w http.ResponseWriter, _ *http.Request, body dev
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_NOT_FOUND", "success": false})
 		return
 	}
-	timeout := timeoutOrDefault(body.Timeout, 30*time.Second)
+	timeout := normalizeToolCallTimeout(body.Timeout)
 	requestID := randomID()
 
-	resultCh := make(chan rpcEnvelope, 1)
-	timeoutCh := make(chan struct{}, 1)
-	h.setPending(requestID, timeout, func(msg rpcEnvelope) { resultCh <- msg }, func() { timeoutCh <- struct{}{} })
-	_ = target.writeJSON(map[string]any{"requestId": requestID, "toolCall": json.RawMessage(body.ToolCall), "type": "tool_call_request"})
+	request := map[string]any{
+		"requestId": requestID,
+		"timeout":   int(timeout / time.Millisecond),
+		"toolCall":  json.RawMessage(body.ToolCall),
+		"type":      "tool_call_request",
+	}
+	if body.OperationID != "" {
+		request["operationId"] = body.OperationID
+	}
 
-	select {
-	case msg := <-resultCh:
+	msg, status := h.dispatch(target, requestID, timeout+toolCallTimeoutPadding, request)
+	switch status {
+	case dispatchOK:
 		writeMergedResult(w, http.StatusOK, true, msg.Result)
-	case <-timeoutCh:
-		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"content": "Tool call timed out (" + formatSeconds(timeout) + "s)", "error": "TIMEOUT", "success": false})
+	case dispatchTimeout:
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"content": "工具调用超时（" + formatSeconds(timeout) + "s）", "error": "TIMEOUT", "success": false})
+	case dispatchOffline:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 	}
 }
 
@@ -167,19 +221,85 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request, body d
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_NOT_FOUND", "success": false})
 		return
 	}
-	timeout := timeoutOrDefault(body.Timeout, 10*time.Second)
+	timeout := timeoutOrDefault(body.Timeout, defaultSystemInfoTimeout)
 	requestID := randomID()
 
-	resultCh := make(chan rpcEnvelope, 1)
-	timeoutCh := make(chan struct{}, 1)
-	h.setPending(requestID, timeout, func(msg rpcEnvelope) { resultCh <- msg }, func() { timeoutCh <- struct{}{} })
-	_ = target.writeJSON(map[string]any{"requestId": requestID, "type": "system_info_request"})
-
-	select {
-	case msg := <-resultCh:
+	msg, status := h.dispatch(target, requestID, timeout, map[string]any{"requestId": requestID, "type": "system_info_request"})
+	switch status {
+	case dispatchOK:
 		writeMergedResult(w, http.StatusOK, true, msg.Result)
-	case <-timeoutCh:
+	case dispatchTimeout:
 		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"error": "TIMEOUT", "success": false})
+	case dispatchOffline:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
+	}
+}
+
+func (s *Server) handleRPC(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
+	h := s.hub(body.UserID)
+	if len(h.authenticatedConnections()) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
+		return
+	}
+	target := h.target(body.DeviceID)
+	if target == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_NOT_FOUND", "success": false})
+		return
+	}
+	timeout := timeoutOrDefault(body.Timeout, defaultDeviceRPCTimeout)
+	requestID := randomID()
+
+	request := map[string]any{
+		"method":    body.Method,
+		"requestId": requestID,
+		"timeout":   int(timeout / time.Millisecond),
+		"type":      "rpc_request",
+	}
+	if len(body.Params) > 0 {
+		request["params"] = json.RawMessage(body.Params)
+	}
+
+	msg, status := h.dispatch(target, requestID, timeout, request)
+	switch status {
+	case dispatchOK:
+		writeRawResult(w, http.StatusOK, msg.Result)
+	case dispatchTimeout:
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"error": "TIMEOUT", "success": false})
+	case dispatchOffline:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
+	}
+}
+
+func (s *Server) handleMessageAPI(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
+	h := s.hub(body.UserID)
+	if len(h.authenticatedConnections()) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
+		return
+	}
+	target := h.target(body.DeviceID)
+	if target == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_NOT_FOUND", "success": false})
+		return
+	}
+	timeout := timeoutOrDefault(body.Timeout, defaultDeviceMessageTimeout)
+	requestID := randomID()
+
+	request := map[string]any{
+		"requestId": requestID,
+		"type":      "message_api_request",
+	}
+	if len(body.API) > 0 {
+		request["api"] = json.RawMessage(body.API)
+	}
+
+	msg, status := h.dispatch(target, requestID, timeout, request)
+	switch status {
+	case dispatchOK:
+		writeMergedResult(w, http.StatusOK, true, msg.Result)
+	case dispatchTimeout:
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"content": "消息 API 调用超时（" + formatSeconds(timeout) + "s）", "error": "TIMEOUT", "success": false})
+	case dispatchOffline:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 	}
 }
 
@@ -194,12 +314,9 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body dev
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_NOT_FOUND", "success": false})
 		return
 	}
-	timeout := timeoutOrDefault(body.Timeout, 10*time.Second)
+	timeout := timeoutOrDefault(body.Timeout, defaultAgentRunTimeout)
 	key := body.OperationID
 
-	resultCh := make(chan rpcEnvelope, 1)
-	timeoutCh := make(chan struct{}, 1)
-	h.setPending(key, timeout, func(msg rpcEnvelope) { resultCh <- msg }, func() { timeoutCh <- struct{}{} })
 	msg := map[string]any{
 		"agentType":   body.AgentType,
 		"jwt":         body.JWT,
@@ -214,17 +331,21 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body dev
 	if body.ResumeSessionID != "" {
 		msg["resumeSessionId"] = body.ResumeSessionID
 	}
-	_ = target.writeJSON(msg)
 
-	select {
-	case msg := <-resultCh:
+	result, status := h.dispatch(target, key, timeout, msg)
+	switch status {
+	case dispatchOK:
+		msg := result
 		if msg.Status == "rejected" {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "DEVICE_REJECTED", "success": false})
+			errorText := defaultString(msg.Reason, "DEVICE_REJECTED")
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": errorText, "success": false})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
-	case <-timeoutCh:
+	case dispatchTimeout:
 		writeJSON(w, http.StatusGatewayTimeout, map[string]any{"error": "TIMEOUT", "success": false})
+	case dispatchOffline:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 	}
 }
 
@@ -253,11 +374,29 @@ func writeMergedResult(w http.ResponseWriter, status int, success bool, result j
 	writeJSON(w, status, merged)
 }
 
+func writeRawResult(w http.ResponseWriter, status int, result json.RawMessage) {
+	if len(result) == 0 {
+		writeJSON(w, status, map[string]any{"success": false})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(result)
+}
+
 func timeoutOrDefault(ms int, fallback time.Duration) time.Duration {
 	if ms <= 0 {
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func normalizeToolCallTimeout(ms int) time.Duration {
+	timeout := timeoutOrDefault(ms, defaultToolCallTimeout)
+	if timeout < minToolCallTimeout {
+		return minToolCallTimeout
+	}
+	return timeout
 }
 
 func randomID() string {

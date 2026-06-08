@@ -42,7 +42,7 @@ All `/api/operations/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>
 | `PORT` | `8787` | HTTP listen port. |
 | `SERVICE_TOKEN` | required | Shared service token for `/api/operations/*` and WebSocket service-token auth. The process refuses to start without it. |
 | `JWKS_PUBLIC_KEY` | empty | JWKS JSON containing an RS256 public key for JWT WebSocket auth. |
-| `LOBE_API_BASE_URL` | `https://app.lobehub.com` | LobeHub API base URL used for API-key authentication when a client connects with `tokenType=apiKey`. Point this at your own LobeHub instance for self-hosted deployments. |
+| `LOBE_API_BASE_URL` | `https://app.lobehub.com` | LobeHub API base URL used for backend callbacks such as abandoned-operation reconciliation and tool-result forwarding. Point this at your own LobeHub instance for self-hosted deployments. |
 | `READ_TIMEOUT` | `30s` | Go HTTP server read timeout. |
 | `WRITE_TIMEOUT` | `30s` | Go HTTP server write timeout. |
 | `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout. |

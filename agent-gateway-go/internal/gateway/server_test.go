@@ -3,11 +3,15 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"crypto"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -125,6 +129,38 @@ func TestWebSocketPushAndResume(t *testing.T) {
 	}
 }
 
+func TestWebSocketJWTClaimValidation(t *testing.T) {
+	jwks, signJWT := testJWTSigner(t)
+	srv := NewServer(Config{JWKSPublicKey: jwks, LobeAPIBaseURL: "http://127.0.0.1:1", ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+	postJSON(t, httpSrv.URL+"/api/operations/init", map[string]any{"operationId": "op-jwt", "userId": "jwt-user"}, http.StatusOK)
+
+	fresh := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-jwt")
+	defer fresh.close()
+	fresh.writeJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(time.Minute), time.Now().Add(-time.Minute)), "tokenType": "jwt"})
+	if msg := fresh.readJSON(t); msg["type"] != "auth_success" {
+		t.Fatalf("expected fresh jwt auth_success, got %+v", msg)
+	}
+
+	expired := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-jwt")
+	defer expired.close()
+	expired.writeJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(-time.Minute), time.Now().Add(-2*time.Minute)), "tokenType": "jwt"})
+	if msg := expired.readJSON(t); msg["type"] != "auth_expired" {
+		t.Fatalf("expected expired jwt auth_expired, got %+v", msg)
+	}
+	wsExpectNoMessage(t, expired, 100*time.Millisecond)
+
+	notYetActive := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-jwt")
+	defer notYetActive.close()
+	notYetActive.writeJSON(t, map[string]any{"type": "auth", "token": signJWT("jwt-user", time.Now().Add(time.Minute), time.Now().Add(time.Minute)), "tokenType": "jwt"})
+	msg := notYetActive.readJSON(t)
+	if msg["type"] != "auth_failed" || msg["reason"] != `"nbf" claim timestamp check failed` {
+		t.Fatalf("expected nbf auth_failed, got %+v", msg)
+	}
+}
+
 func TestConfirmationAndInput(t *testing.T) {
 	_, ts := testServer()
 	defer ts.Close()
@@ -173,9 +209,142 @@ func TestConfirmationAndInput(t *testing.T) {
 	}
 }
 
+func TestInactivityWatchdogReconcilesPhantomTimeout(t *testing.T) {
+	finalizeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/finalize-abandoned" {
+			t.Fatalf("unexpected finalize path: %s", r.URL.Path)
+		}
+		writeTestJSON(t, w, map[string]any{"finalized": false, "found": true})
+	}))
+	defer finalizeSrv.Close()
+
+	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: finalizeSrv.URL})
+	srv.cleanupDelay = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+	postJSON(t, httpSrv.URL+"/api/operations/init", map[string]any{"operationId": "op-watchdog-phantom", "userId": "user-1"}, http.StatusOK)
+
+	ws := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-watchdog-phantom")
+	defer ws.close()
+	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	_ = ws.readJSON(t)
+
+	op := srv.getOperation("op-watchdog-phantom")
+	op.mu.Lock()
+	op.lastEventAt = time.Now().Add(-11 * time.Minute)
+	op.lastEventTyp = "step_complete"
+	op.mu.Unlock()
+	op.fireWatchdog()
+
+	msg := ws.readJSON(t)
+	if msg["type"] != "session_complete" {
+		t.Fatalf("expected session_complete for phantom timeout, got %+v", msg)
+	}
+	_, status := op.statusSnapshot()
+	if status != StatusCompleted {
+		t.Fatalf("expected completed status, got %s", status)
+	}
+}
+
+func TestInactivityWatchdogReportsAbandonedTimeout(t *testing.T) {
+	finalizeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(t, w, map[string]any{"abandoned": true, "finalized": true, "found": true})
+	}))
+	defer finalizeSrv.Close()
+
+	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: finalizeSrv.URL})
+	srv.cleanupDelay = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+	postJSON(t, httpSrv.URL+"/api/operations/init", map[string]any{"operationId": "op-watchdog-abandoned", "userId": "user-1"}, http.StatusOK)
+
+	ws := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-watchdog-abandoned")
+	defer ws.close()
+	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	_ = ws.readJSON(t)
+
+	op := srv.getOperation("op-watchdog-abandoned")
+	op.mu.Lock()
+	op.lastEventAt = time.Now().Add(-11 * time.Minute)
+	op.lastEventTyp = "step_complete"
+	op.mu.Unlock()
+	op.fireWatchdog()
+
+	msg := ws.readJSON(t)
+	if msg["type"] != "status_change" || msg["status"] != string(StatusError) {
+		t.Fatalf("expected error status_change for abandoned timeout, got %+v", msg)
+	}
+	_, status := op.statusSnapshot()
+	if status != StatusError {
+		t.Fatalf("expected error status, got %s", status)
+	}
+}
+
+func TestInactivityWatchdogRechecksRecentEventsAfterFinalize(t *testing.T) {
+	finalizeStarted := make(chan struct{})
+	allowFinalize := make(chan struct{})
+	finalizeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(finalizeStarted)
+		<-allowFinalize
+		writeTestJSON(t, w, map[string]any{"abandoned": true, "finalized": true, "found": true})
+	}))
+	defer finalizeSrv.Close()
+
+	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: finalizeSrv.URL})
+	srv.cleanupDelay = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+	postJSON(t, httpSrv.URL+"/api/operations/init", map[string]any{"operationId": "op-watchdog-race", "userId": "user-1"}, http.StatusOK)
+
+	ws := dialWebSocket(t, httpSrv.URL, "/ws?operationId=op-watchdog-race")
+	defer ws.close()
+	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	_ = ws.readJSON(t)
+
+	op := srv.getOperation("op-watchdog-race")
+	op.mu.Lock()
+	op.lastEventAt = time.Now().Add(-11 * time.Minute)
+	op.lastEventTyp = "step_complete"
+	op.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		op.fireWatchdog()
+		close(done)
+	}()
+	<-finalizeStarted
+
+	op.pushEvent(agentStreamEvent{
+		Data:        json.RawMessage(`{"content":"still alive"}`),
+		OperationID: "op-watchdog-race",
+		StepIndex:   0,
+		Timestamp:   time.Now().UnixMilli(),
+		Type:        "stream_chunk",
+	})
+	if msg := ws.readJSON(t); msg["type"] != "agent_event" {
+		t.Fatalf("expected recent agent_event, got %+v", msg)
+	}
+
+	close(allowFinalize)
+	<-done
+	wsExpectNoMessage(t, ws, 100*time.Millisecond)
+	_, status := op.statusSnapshot()
+	if status != StatusRunning {
+		t.Fatalf("expected running status after recent event, got %s", status)
+	}
+}
+
 func postJSON(t *testing.T, url string, body any, expected int) {
 	t.Helper()
 	_ = postJSONBody(t, url, body, expected)
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func postJSONBody(t *testing.T, url string, body any, expected int) map[string]any {
@@ -247,6 +416,8 @@ func (w *testWS) writeJSON(t *testing.T, value any) {
 	mask := []byte{1, 2, 3, 4}
 	if len(payload) < 126 {
 		frame = append(frame, 0x80|byte(len(payload)))
+	} else if len(payload) <= 0xffff {
+		frame = append(frame, 0x80|126, byte(len(payload)>>8), byte(len(payload)))
 	} else {
 		t.Fatalf("test payload too large")
 	}
@@ -292,6 +463,16 @@ func (w *testWS) readJSON(t *testing.T) map[string]any {
 	return msg
 }
 
+func wsExpectNoMessage(t *testing.T, ws *testWS, timeout time.Duration) {
+	t.Helper()
+	_ = ws.conn.SetReadDeadline(time.Now().Add(timeout))
+	if _, err := ws.br.ReadByte(); err == nil {
+		t.Fatal("expected no websocket message")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("expected read timeout while waiting for no message, got %v", err)
+	}
+}
+
 func (w *testWS) close() {
 	_ = w.conn.Close()
 }
@@ -308,4 +489,49 @@ func randomWSKey(t *testing.T) string {
 func expectedAccept(key string) string {
 	sum := sha1.Sum([]byte(key + wsGUID))
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func testJWTSigner(t *testing.T) (string, func(string, time.Time, time.Time) string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exponent := big.NewInt(int64(key.PublicKey.E)).Bytes()
+	jwksBody := map[string]any{
+		"keys": []map[string]string{{
+			"alg": "RS256",
+			"e":   base64.RawURLEncoding.EncodeToString(exponent),
+			"kty": "RSA",
+			"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+		}},
+	}
+	jwks, err := json.Marshal(jwksBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(jwks), func(sub string, exp time.Time, nbf time.Time) string {
+		t.Helper()
+		header, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"exp": exp.Unix(),
+			"iat": time.Now().Unix(),
+			"nbf": nbf.Unix(),
+			"sub": sub,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signingInput := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
+		sum := sha256.Sum256([]byte(signingInput))
+		sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+	}
 }

@@ -14,6 +14,17 @@ The original gateway implementations remain the protocol reference. This reposit
 - No Redis, PostgreSQL, NATS, or other external runtime services.
 - Keep protocol behavior compatible with the reference implementations where practical.
 
+## Alignment Target
+
+The protocol baseline for this repository is the pair of standalone reference implementations:
+
+- [`device-gateway`](../device-gateway/) at `d9df5542f06df6f5555356efa0735f767f0e5ccf`
+- [`agent-gateway`](../agent-gateway/) at `82dc31148e270866356a24c3b4fbefa912479ebb`
+
+For implemented gateway services, the target is compatibility with the public HTTP routes, WebSocket messages, request and response shapes, authentication behavior, routing semantics, and timeout behavior exposed by those reference implementations. This target intentionally keeps the Go runtime self-hosted and single-instance oriented.
+
+The alignment target does not include deliberately excluded platform surfaces: admin APIs, metrics, Durable Object storage or WebSocket hibernation, multi-instance coordination, geo reporting, and admin reporting.
+
 ## Projects
 
 | Project | Status | Description |

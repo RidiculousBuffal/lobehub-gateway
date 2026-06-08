@@ -14,6 +14,17 @@
 - 不依赖 Redis、PostgreSQL、NATS 或其他外部运行时服务。
 - 在可行范围内保持与参考实现的协议行为兼容。
 
+## 对齐目标
+
+本仓库的协议基准是两份独立参考实现：
+
+- [`device-gateway`](../device-gateway/)：`d9df5542f06df6f5555356efa0735f767f0e5ccf`
+- [`agent-gateway`](../agent-gateway/)：`82dc31148e270866356a24c3b4fbefa912479ebb`
+
+对于已经实现的 gateway 服务，对齐目标是兼容这些参考实现暴露的公开 HTTP 路由、WebSocket 消息、请求和响应结构、认证行为、路由语义以及超时行为。同时，Go 版本仍然保持面向自托管的单实例运行时定位。
+
+该对齐目标不包含已明确排除的平台能力：管理 API、指标、Durable Object 存储或 WebSocket 休眠、多实例协调、地理位置上报和管理侧上报。
+
 ## 项目
 
 | 项目 | 状态 | 说明 |

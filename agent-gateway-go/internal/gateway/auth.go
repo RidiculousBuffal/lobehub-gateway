@@ -149,8 +149,12 @@ func (a *authResolver) verifyJWT(tokenString string) (string, error) {
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return "", err
 	}
-	if exp, ok := claims["exp"].(float64); ok && int64(exp) < time.Now().Unix() {
-		return "", errTokenExpired
+	now := float64(time.Now().Unix())
+	if exp, ok := claims["exp"].(float64); ok && now >= exp {
+		return "", fmt.Errorf(`"exp" claim timestamp check failed: %w`, errTokenExpired)
+	}
+	if nbf, ok := claims["nbf"].(float64); ok && now < nbf {
+		return "", errors.New(`"nbf" claim timestamp check failed`)
 	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
