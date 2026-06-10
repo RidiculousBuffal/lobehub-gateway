@@ -339,6 +339,9 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body dev
 	if body.ResumeSessionID != "" {
 		msg["resumeSessionId"] = body.ResumeSessionID
 	}
+	if body.SystemContext != "" {
+		msg["systemContext"] = body.SystemContext
+	}
 
 	result, status := h.dispatch(target, key, timeout, msg)
 	switch status {

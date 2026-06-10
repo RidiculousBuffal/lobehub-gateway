@@ -297,6 +297,40 @@ func TestMessageAPIAndGenericRPC(t *testing.T) {
 	}
 }
 
+func TestAgentRunForwardsSystemContext(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	ws := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=d1&connectionId=conn-1")
+	defer ws.close()
+	ws.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, ws, map[string]any{"type": "auth_success"})
+
+	done := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/agent/run", "service-token", `{"userId":"u1","deviceId":"d1","operationId":"op-1","agentType":"claude-code","jwt":"jwt-1","prompt":"run","topicId":"topic-1","cwd":"/repo","resumeSessionId":"sess-1","systemContext":"repo rules","timeout":1000}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		done <- body
+	}()
+
+	request := ws.readJSON(t)
+	if request["type"] != "agent_run_request" ||
+		request["operationId"] != "op-1" ||
+		request["systemContext"] != "repo rules" ||
+		request["cwd"] != "/repo" ||
+		request["resumeSessionId"] != "sess-1" {
+		t.Fatalf("unexpected agent run request: %#v", request)
+	}
+	ws.sendJSON(t, map[string]any{"operationId": "op-1", "status": "accepted", "type": "agent_run_ack"})
+	if body := <-done; body["success"] != true {
+		t.Fatalf("unexpected agent run response: %#v", body)
+	}
+}
+
 func TestConnectionIDChannelCoexistenceAndPriority(t *testing.T) {
 	srv := NewServer(Config{ServiceToken: "service-token"})
 	srv.authTimeout = time.Second

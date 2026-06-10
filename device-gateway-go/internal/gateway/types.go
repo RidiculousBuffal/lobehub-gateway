@@ -54,6 +54,7 @@ type deviceHTTPBody struct {
 	Params          json.RawMessage `json:"params,omitempty"`
 	Prompt          string          `json:"prompt,omitempty"`
 	ResumeSessionID string          `json:"resumeSessionId,omitempty"`
+	SystemContext   string          `json:"systemContext,omitempty"`
 	Timeout         int             `json:"timeout,omitempty"`
 	ToolCall        json.RawMessage `json:"toolCall,omitempty"`
 	TopicID         string          `json:"topicId,omitempty"`
