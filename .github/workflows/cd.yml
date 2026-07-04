@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "发布版本号：例如 0.1.0-rc.1 或 0.1.0"
+        description: "Release version, e.g. 0.1.0-rc.1 or 0.1.0"
         required: true
         type: string
       latest:
-        description: "设为默认版本：标记 GitHub Release Latest"
+        description: "Mark as default version: tag GitHub Release as Latest"
         required: true
         type: boolean
         default: false
@@ -26,7 +26,7 @@ env:
 
 jobs:
   prepare-release:
-    name: 准备发布上下文
+    name: Prepare release context
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.prepare.outputs.version }}
@@ -34,12 +34,12 @@ jobs:
       prerelease: ${{ steps.prepare.outputs.prerelease }}
       publish_latest: ${{ steps.prepare.outputs.publish_latest }}
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: 校验版本与目标引用
+      - name: Validate version and target ref
         id: prepare
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/scripts/release/prepare-release.sh
 
-      - name: 输出发布摘要
+      - name: Print release summary
         run: |
           {
             echo "## LobeHub Gateway Go Release"
@@ -60,7 +60,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-binaries:
-    name: 构建二进制 (${{ matrix.os }}/${{ matrix.arch }})
+    name: Build binaries (${{ matrix.os }}/${{ matrix.arch }})
     needs: prepare-release
     runs-on: ubuntu-latest
     strategy:
@@ -71,17 +71,17 @@ jobs:
           - os: linux
             arch: arm64
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare-release.outputs.target_sha }}
 
-      - name: 设置 Go 环境
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: 缓存 Go 构建缓存
+      - name: Cache Go build cache
         uses: actions/cache@v4
         with:
           path: |
@@ -91,10 +91,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-
 
-      - name: 下载依赖
+      - name: Download dependencies
         run: go mod download
 
-      - name: 构建统一二进制
+      - name: Build unified binary
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
@@ -106,7 +106,7 @@ jobs:
           go build -trimpath -ldflags='-s -w' -o "dist/${BINARY_NAME}" ./cmd/gateway
           ls -al "dist/${BINARY_NAME}"
 
-      - name: 构建独立 Agent 网关
+      - name: Build standalone agent gateway
         working-directory: ./agent-gateway-go
         env:
           GOOS: ${{ matrix.os }}
@@ -117,7 +117,7 @@ jobs:
           BINARY_NAME="agent-gateway-${{ matrix.os }}-${{ matrix.arch }}"
           go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/agent-gateway-go
 
-      - name: 构建独立 Device 网关
+      - name: Build standalone device gateway
         working-directory: ./device-gateway-go
         env:
           GOOS: ${{ matrix.os }}
@@ -128,7 +128,7 @@ jobs:
           BINARY_NAME="device-gateway-${{ matrix.os }}-${{ matrix.arch }}"
           go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/device-gateway-go
 
-      - name: 上传产物
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.arch }}
@@ -136,19 +136,19 @@ jobs:
           if-no-files-found: error
 
   create-draft-release:
-    name: 创建 tag 与草稿 Release
+    name: Create tag and draft release
     needs:
       - prepare-release
       - build-binaries
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.target_sha }}
 
-      - name: 创建 tag 与草稿 Release
+      - name: Create tag and draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -157,20 +157,20 @@ jobs:
         run: ./.github/scripts/release/create-draft-release.sh
 
   upload-release-assets:
-    name: 上传产物到 Release
+    name: Upload assets to release
     needs:
       - prepare-release
       - create-draft-release
     runs-on: ubuntu-latest
     steps:
-      - name: 下载所有二进制产物
+      - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: binaries-*
           path: dist
           merge-multiple: true
 
-      - name: 上传到 Release
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -181,13 +181,13 @@ jobs:
           gh release upload "$VERSION" dist/* --clobber
 
   publish-release:
-    name: 发布 Release
+    name: Publish release
     needs:
       - prepare-release
       - upload-release-assets
     runs-on: ubuntu-latest
     steps:
-      - name: 切换 Release 为发布态
+      - name: Set release to published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -198,7 +198,7 @@ jobs:
           case "$PUBLISH_LATEST" in
             true | false) ;;
             *)
-              echo "::error::PUBLISH_LATEST 必须是 true 或 false，当前为 $PUBLISH_LATEST"
+              echo "::error::PUBLISH_LATEST must be true or false, got $PUBLISH_LATEST"
               exit 1
               ;;
           esac

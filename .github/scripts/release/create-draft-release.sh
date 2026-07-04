@@ -5,10 +5,10 @@ git fetch --force --tags origin
 EXISTING_TAG_SHA="$(git rev-parse --verify --quiet "refs/tags/$VERSION^{}" || true)"
 if [[ -n "$EXISTING_TAG_SHA" ]]; then
   if [[ "$EXISTING_TAG_SHA" != "$TARGET_SHA" ]]; then
-    echo "::error::tag $VERSION 已存在，但指向 $EXISTING_TAG_SHA，不是目标 $TARGET_SHA"
+    echo "::error::tag $VERSION already exists but points to $EXISTING_TAG_SHA, not target $TARGET_SHA"
     exit 1
   fi
-  echo "::notice::tag $VERSION 已存在且指向目标 commit，继续复用"
+  echo "::notice::tag $VERSION already exists and points to the target commit, reusing it"
 else
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -20,18 +20,18 @@ if RELEASE_JSON="$(gh release view "$VERSION" --json isDraft,isPrerelease 2>/dev
   RELEASE_DRAFT="$(jq -r .isDraft <<< "$RELEASE_JSON")"
   RELEASE_PRERELEASE="$(jq -r .isPrerelease <<< "$RELEASE_JSON")"
   if [[ "$RELEASE_DRAFT" != "true" ]]; then
-    echo "::error::Release $VERSION 已发布，不能复用"
+    echo "::error::Release $VERSION is already published, cannot reuse"
     exit 1
   fi
   if [[ "$RELEASE_PRERELEASE" != "$PRERELEASE" ]]; then
-    echo "::error::草稿 Release 的 prerelease=$RELEASE_PRERELEASE 与本次输入 prerelease=$PRERELEASE 不一致"
+    echo "::error::Draft release prerelease=$RELEASE_PRERELEASE does not match input prerelease=$PRERELEASE"
     exit 1
   fi
-  echo "::notice::草稿 Release $VERSION 已存在，继续复用"
+  echo "::notice::Draft release $VERSION already exists, reusing it"
 else
   NOTES_FILE="docs/release_notes/${VERSION}.md"
   if [[ ! -f "$NOTES_FILE" ]]; then
-    echo "::error::Release notes 文件不存在: $NOTES_FILE"
+    echo "::error::Release notes file does not exist: $NOTES_FILE"
     exit 1
   fi
 

@@ -18,18 +18,18 @@ env:
 
 jobs:
   check-unified:
-    name: 检查统一二进制 (unified)
+    name: Check unified binary
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: 设置 Go 环境
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: 缓存 Go 构建缓存
+      - name: Cache Go build cache
         uses: actions/cache@v4
         with:
           path: |
@@ -39,31 +39,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-unified-
 
-      - name: 下载依赖
+      - name: Download dependencies
         run: go mod download
 
-      - name: 编译统一二进制
+      - name: Build unified binary
         run: go build -trimpath -ldflags='-s -w' ./cmd/gateway
 
-      - name: 测试子模块
+      - name: Test sub-modules
         run: go test ./agent-gateway-go/... ./device-gateway-go/...
 
   check-agent-gateway:
-    name: 检查 Agent 网关 (agent-gateway-go)
+    name: Check agent gateway (agent-gateway-go)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./agent-gateway-go
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: 设置 Go 环境
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: 缓存 Go 构建缓存
+      - name: Cache Go build cache
         uses: actions/cache@v4
         with:
           path: |
@@ -73,28 +73,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-agent-
 
-      - name: 编译
+      - name: Build
         run: go build -trimpath -ldflags='-s -w' ./cmd/agent-gateway-go
 
-      - name: 单元测试
+      - name: Test
         run: go test ./...
 
   check-device-gateway:
-    name: 检查 Device 网关 (device-gateway-go)
+    name: Check device gateway (device-gateway-go)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./device-gateway-go
     steps:
-      - name: 检出代码
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: 设置 Go 环境
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: 缓存 Go 构建缓存
+      - name: Cache Go build cache
         uses: actions/cache@v4
         with:
           path: |
@@ -104,8 +104,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-device-
 
-      - name: 编译
+      - name: Build
         run: go build -trimpath -ldflags='-s -w' ./cmd/device-gateway-go
 
-      - name: 单元测试
+      - name: Test
         run: go test ./...
