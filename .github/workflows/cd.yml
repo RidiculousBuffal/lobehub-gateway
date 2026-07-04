@@ -1,0 +1,224 @@
+name: Gateway CD
+run-name: CD ${{ inputs.version }}${{ inputs.latest && ' (latest)' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号：例如 0.1.0-rc.1 或 0.1.0"
+        required: true
+        type: string
+      latest:
+        description: "设为默认版本：标记 GitHub Release Latest"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cd-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  prepare-release:
+    name: 准备发布上下文
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      target_sha: ${{ steps.prepare.outputs.target_sha }}
+      prerelease: ${{ steps.prepare.outputs.prerelease }}
+      publish_latest: ${{ steps.prepare.outputs.publish_latest }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 校验版本与目标引用
+        id: prepare
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_LATEST: ${{ inputs.latest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/scripts/release/prepare-release.sh
+
+      - name: 输出发布摘要
+        run: |
+          {
+            echo "## LobeHub Gateway Go Release"
+            echo
+            echo "- Version: \`${{ steps.prepare.outputs.version }}\`"
+            echo "- Workflow ref: \`${{ github.ref_name }}\`"
+            echo "- Target SHA: \`${{ steps.prepare.outputs.target_sha }}\`"
+            echo "- Prerelease: \`${{ steps.prepare.outputs.prerelease }}\`"
+            echo "- Latest: \`${{ steps.prepare.outputs.publish_latest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-binaries:
+    name: 构建二进制 (${{ matrix.os }}/${{ matrix.arch }})
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 缓存 Go 构建缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('**/go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-
+
+      - name: 下载依赖
+        run: go mod download
+
+      - name: 构建统一二进制
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          BINARY_NAME="gateway-${{ matrix.os }}-${{ matrix.arch }}"
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          go build -trimpath -ldflags='-s -w' -o "dist/${BINARY_NAME}" ./cmd/gateway
+          ls -al "dist/${BINARY_NAME}"
+
+      - name: 构建独立 Agent 网关
+        working-directory: ./agent-gateway-go
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          BINARY_NAME="agent-gateway-${{ matrix.os }}-${{ matrix.arch }}"
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/agent-gateway-go
+
+      - name: 构建独立 Device 网关
+        working-directory: ./device-gateway-go
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          BINARY_NAME="device-gateway-${{ matrix.os }}-${{ matrix.arch }}"
+          if [[ "${{ matrix.os }}" == "windows" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/device-gateway-go
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  create-draft-release:
+    name: 创建 tag 与草稿 Release
+    needs:
+      - prepare-release
+      - build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: 创建 tag 与草稿 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+          PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
+        run: ./.github/scripts/release/create-draft-release.sh
+
+  upload-release-assets:
+    name: 上传产物到 Release
+    needs:
+      - prepare-release
+      - create-draft-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有二进制产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+
+      - name: 上传到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -al dist/
+          gh release upload "$VERSION" dist/* --clobber
+
+  publish-release:
+    name: 发布 Release
+    needs:
+      - prepare-release
+      - upload-release-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: 切换 Release 为发布态
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          PUBLISH_LATEST: ${{ needs.prepare-release.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          case "$PUBLISH_LATEST" in
+            true | false) ;;
+            *)
+              echo "::error::PUBLISH_LATEST 必须是 true 或 false，当前为 $PUBLISH_LATEST"
+              exit 1
+              ;;
+          esac
+          RELEASE_ID="$(gh release view "$VERSION" --json databaseId --jq .databaseId)"
+          gh api --method PATCH "repos/{owner}/{repo}/releases/$RELEASE_ID" \
+            -F draft=false \
+            -F "make_latest=$PUBLISH_LATEST" \
+            --silent
