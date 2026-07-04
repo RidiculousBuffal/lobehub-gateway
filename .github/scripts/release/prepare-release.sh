@@ -52,10 +52,10 @@ if [[ -n "$EXISTING_TAG_SHA" ]]; then
 fi
 
 if [[ "$INPUT_LATEST" == "true" ]]; then
-  git fetch --force origin main
-  MAIN_SHA="$(git rev-parse --verify origin/main)"
-  if [[ "$TARGET_SHA" != "$MAIN_SHA" ]]; then
-    echo "::error::latest can only be published from the current HEAD of origin/main. workflow_ref=$GITHUB_REF_NAME target_sha=$TARGET_SHA origin/main=$MAIN_SHA"
+  git fetch --force origin master
+  MASTER_SHA="$(git rev-parse --verify origin/master)"
+  if [[ "$TARGET_SHA" != "$MASTER_SHA" ]]; then
+    echo "::error::latest can only be published from the current HEAD of origin/master. workflow_ref=$GITHUB_REF_NAME target_sha=$TARGET_SHA origin/master=$MASTER_SHA"
     exit 1
   fi
 fi

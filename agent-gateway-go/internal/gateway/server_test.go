@@ -29,6 +29,24 @@ func testServer() (*Server, *httptest.Server) {
 	return srv, httpSrv
 }
 
+func TestConfigFromEnvPortFallback(t *testing.T) {
+	t.Setenv("AGENT_PORT", "")
+	t.Setenv("PORT", "")
+	if cfg := ConfigFromEnv(); cfg.Port != "8787" {
+		t.Fatalf("expected default port 8787, got %s", cfg.Port)
+	}
+
+	t.Setenv("PORT", "9000")
+	if cfg := ConfigFromEnv(); cfg.Port != "9000" {
+		t.Fatalf("expected PORT fallback to 9000, got %s", cfg.Port)
+	}
+
+	t.Setenv("AGENT_PORT", "7000")
+	if cfg := ConfigFromEnv(); cfg.Port != "7000" {
+		t.Fatalf("expected AGENT_PORT to take precedence over PORT, got %s", cfg.Port)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	_, ts := testServer()
 	defer ts.Close()

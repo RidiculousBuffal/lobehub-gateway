@@ -39,7 +39,7 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `8787` | HTTP 监听端口。 |
+| `PORT` | `8787` | HTTP 监听端口。设置 `AGENT_PORT` 时优先使用（供统一二进制使用）。 |
 | `SERVICE_TOKEN` | 必填 | `/api/operations/*` 与 WebSocket service-token 认证共用的服务令牌。未设置时进程会拒绝启动。 |
 | `JWKS_PUBLIC_KEY` | 空 | 包含 RS256 公钥的 JWKS JSON,用于 WebSocket JWT 认证。 |
 | `LOBE_API_BASE_URL` | `https://app.lobehub.com` | 用于 abandoned operation reconciliation、tool-result forwarding 等后端回调的 LobeHub API 基础地址。自托管部署需指向你自己的 LobeHub 实例。 |

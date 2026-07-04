@@ -107,8 +107,8 @@ Because this repository targets a single gateway instance, it does not provide d
 # Build
  go build -o gateway ./cmd/gateway
 
-# Test all sub-modules from root
- go test ./agent-gateway-go/... ./device-gateway-go/...
+# Test root module (unified binary)
+ go test ./...
 ```
 
 ### Individual gateways

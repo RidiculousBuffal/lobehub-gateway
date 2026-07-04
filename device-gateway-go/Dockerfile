@@ -8,7 +8,7 @@ RUN go build -trimpath -ldflags='-s -w' -o /out/device-gateway-go ./cmd/device-g
 FROM alpine:3.20
 RUN adduser -D -H -u 10001 appuser
 USER appuser
-EXPOSE 8787
-ENV PORT=8787
+EXPOSE 8788
+ENV PORT=8788
 COPY --from=builder /out/device-gateway-go /usr/local/bin/device-gateway-go
 ENTRYPOINT ["device-gateway-go"]

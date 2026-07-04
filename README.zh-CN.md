@@ -107,8 +107,8 @@ lobehub-gateway-go/
 # 构建
  go build -o gateway ./cmd/gateway
 
-# 从根目录测试所有子模块
- go test ./agent-gateway-go/... ./device-gateway-go/...
+# 从根目录测试根模块（统一二进制）
+ go test ./...
 ```
 
 ### 单独网关

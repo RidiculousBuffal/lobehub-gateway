@@ -31,7 +31,7 @@ All `/api/device/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>` an
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `PORT` | `8787` | HTTP listen port. |
+| `PORT` | `8788` | HTTP listen port. `DEVICE_PORT` takes precedence if set (used by the unified binary). |
 | `SERVICE_TOKEN` | required | Shared service token for `/api/device/*` and WebSocket service-token auth. The process refuses to start without it. |
 | `JWKS_PUBLIC_KEY` | empty | JWKS JSON containing an RS256 public key for JWT WebSocket auth. |
 | `READ_TIMEOUT` | `30s` | Go HTTP server read timeout. |
@@ -50,14 +50,14 @@ SERVICE_TOKEN=dev-secret go run ./cmd/device-gateway-go
 Then configure LobeHub Server with:
 
 ```bash
-DEVICE_GATEWAY_URL=http://localhost:8787
+DEVICE_GATEWAY_URL=http://localhost:8788
 DEVICE_GATEWAY_SERVICE_TOKEN=dev-secret
 ```
 
 Devices can connect with:
 
 ```bash
-lh connect --gateway http://localhost:8787
+lh connect --gateway http://localhost:8788
 ```
 
 Desktop clients should use the same gateway URL.
@@ -68,7 +68,7 @@ From the repository root:
 
 ```bash
 docker build -f device-gateway-go/Dockerfile -t lobehub-device-gateway-go device-gateway-go
-docker run --rm -p 8787:8787 -e SERVICE_TOKEN=dev-secret lobehub-device-gateway-go
+docker run --rm -p 8788:8788 -e SERVICE_TOKEN=dev-secret lobehub-device-gateway-go
 ```
 
 ## Reverse proxy notes
@@ -79,7 +79,7 @@ Example Nginx location:
 
 ```nginx
 location / {
-  proxy_pass http://127.0.0.1:8787;
+  proxy_pass http://127.0.0.1:8788;
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
@@ -91,7 +91,7 @@ Example Caddy site:
 
 ```caddyfile
 gateway.example.com {
-  reverse_proxy 127.0.0.1:8787
+  reverse_proxy 127.0.0.1:8788
 }
 ```
 

@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - master
 
 permissions:
   contents: read
@@ -45,8 +45,8 @@ jobs:
       - name: Build unified binary
         run: go build -trimpath -ldflags='-s -w' ./cmd/gateway
 
-      - name: Test sub-modules
-        run: go test ./agent-gateway-go/... ./device-gateway-go/...
+      - name: Test root module
+        run: go test ./...
 
   check-agent-gateway:
     name: Check agent gateway (agent-gateway-go)
