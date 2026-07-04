@@ -29,12 +29,18 @@ if RELEASE_JSON="$(gh release view "$VERSION" --json isDraft,isPrerelease 2>/dev
   fi
   echo "::notice::草稿 Release $VERSION 已存在，继续复用"
 else
+  NOTES_FILE="docs/release_notes/${VERSION}.md"
+  if [[ ! -f "$NOTES_FILE" ]]; then
+    echo "::error::Release notes 文件不存在: $NOTES_FILE"
+    exit 1
+  fi
+
   RELEASE_ARGS=(
     --draft
     --verify-tag
     --target "$TARGET_SHA"
     --title "LobeHub Gateway Go $VERSION"
-    --notes "Release $VERSION"
+    --notes-file "$NOTES_FILE"
   )
   if [[ "$PRERELEASE" == "true" ]]; then
     RELEASE_ARGS+=(--prerelease)
