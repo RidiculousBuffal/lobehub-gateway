@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: cd-${{ inputs.version }}
@@ -180,11 +181,133 @@ jobs:
           ls -al dist/
           gh release upload "$VERSION" dist/* --clobber
 
+  build-docker:
+    name: Build Docker image (${{ matrix.arch }})
+    needs:
+      - prepare-release
+      - build-binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-linux-${{ matrix.arch }}
+          path: .
+
+      - name: Determine registry and image
+        id: registry
+        env:
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$DOCKER_IMAGE" ]]; then
+            IMAGE="$DOCKER_IMAGE"
+            if [[ "$IMAGE" == */* ]]; then
+              REGISTRY="${IMAGE%%/*}"
+              if [[ ! "$REGISTRY" =~ \. ]] && [[ ! "$REGISTRY" =~ : ]]; then
+                REGISTRY="docker.io"
+              fi
+            else
+              REGISTRY="docker.io"
+            fi
+          else
+            IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            REGISTRY="ghcr.io"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.registry.outputs.registry }}
+          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
+          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push arch-specific image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          build-args: |
+            BINARY_FILE=gateway-linux-${{ matrix.arch }}
+          tags: ${{ steps.registry.outputs.image }}:${{ needs.prepare-release.outputs.version }}-${{ matrix.arch }}
+
+  merge-docker:
+    name: Merge Docker multi-arch manifest
+    needs:
+      - prepare-release
+      - build-docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine registry and image
+        id: registry
+        env:
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$DOCKER_IMAGE" ]]; then
+            IMAGE="$DOCKER_IMAGE"
+            if [[ "$IMAGE" == */* ]]; then
+              REGISTRY="${IMAGE%%/*}"
+              if [[ ! "$REGISTRY" =~ \. ]] && [[ ! "$REGISTRY" =~ : ]]; then
+                REGISTRY="docker.io"
+              fi
+            else
+              REGISTRY="docker.io"
+            fi
+          else
+            IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            REGISTRY="ghcr.io"
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.registry.outputs.registry }}
+          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
+          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        env:
+          IMAGE: ${{ steps.registry.outputs.image }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          PUBLISH_LATEST: ${{ needs.prepare-release.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "$IMAGE:$VERSION" \
+            "$IMAGE:$VERSION-amd64" \
+            "$IMAGE:$VERSION-arm64"
+          if [[ "$PUBLISH_LATEST" == "true" ]]; then
+            docker buildx imagetools create \
+              -t "$IMAGE:latest" \
+              "$IMAGE:$VERSION-amd64" \
+              "$IMAGE:$VERSION-arm64"
+          fi
+
   publish-release:
     name: Publish release
     needs:
       - prepare-release
       - upload-release-assets
+      - merge-docker
     runs-on: ubuntu-latest
     steps:
       - name: Set release to published
