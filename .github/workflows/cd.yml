@@ -70,12 +70,6 @@ jobs:
             arch: amd64
           - os: linux
             arch: arm64
-          - os: darwin
-            arch: amd64
-          - os: darwin
-            arch: arm64
-          - os: windows
-            arch: amd64
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
@@ -109,9 +103,6 @@ jobs:
         run: |
           set -euo pipefail
           BINARY_NAME="gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          if [[ "${{ matrix.os }}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
-          fi
           go build -trimpath -ldflags='-s -w' -o "dist/${BINARY_NAME}" ./cmd/gateway
           ls -al "dist/${BINARY_NAME}"
 
@@ -124,9 +115,6 @@ jobs:
         run: |
           set -euo pipefail
           BINARY_NAME="agent-gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          if [[ "${{ matrix.os }}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
-          fi
           go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/agent-gateway-go
 
       - name: 构建独立 Device 网关
@@ -138,9 +126,6 @@ jobs:
         run: |
           set -euo pipefail
           BINARY_NAME="device-gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          if [[ "${{ matrix.os }}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
-          fi
           go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/device-gateway-go
 
       - name: 上传产物
