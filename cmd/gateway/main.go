@@ -8,66 +8,95 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	agentgateway "github.com/lobehub/lobehub/apps/agent-gateway-go"
 	devicegateway "github.com/lobehub/lobehub/apps/device-gateway-go"
 )
 
+type service struct {
+	name            string
+	server          *http.Server
+	shutdownTimeout time.Duration
+}
+
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
+	// The unified binary ignores PORT: each service gets its own variable so
+	// the two listeners cannot collide in a single process.
 	agentCfg := agentgateway.ConfigFromEnv()
+	agentCfg.Port = envOrDefault("AGENT_PORT", "8787")
 	if err := agentCfg.Validate(); err != nil {
 		slog.Error("invalid agent configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	deviceCfg := devicegateway.ConfigFromEnv()
+	deviceCfg.Port = envOrDefault("DEVICE_PORT", "8788")
 	if err := deviceCfg.Validate(); err != nil {
 		slog.Error("invalid device configuration", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
-	agentServer := agentgateway.NewServer(agentCfg)
-	deviceServer := devicegateway.NewServer(deviceCfg)
-
-	agentHTTP := &http.Server{
-		Addr:         ":" + agentCfg.Port,
-		Handler:      agentgateway.Routes(agentServer),
-		ReadTimeout:  agentCfg.ReadTimeout,
-		WriteTimeout: agentCfg.WriteTimeout,
-	}
-	deviceHTTP := &http.Server{
-		Addr:         ":" + deviceCfg.Port,
-		Handler:      devicegateway.Routes(deviceServer),
-		ReadTimeout:  deviceCfg.ReadTimeout,
-		WriteTimeout: deviceCfg.WriteTimeout,
+	services := []service{
+		{
+			name:            "agent gateway",
+			server:          newHTTPServer(agentCfg.Port, agentgateway.NewServer(agentCfg).Routes(), agentCfg.ReadTimeout, agentCfg.WriteTimeout),
+			shutdownTimeout: agentCfg.ShutdownTimeout,
+		},
+		{
+			name:            "device gateway",
+			server:          newHTTPServer(deviceCfg.Port, devicegateway.NewServer(deviceCfg).Routes(), deviceCfg.ReadTimeout, deviceCfg.WriteTimeout),
+			shutdownTimeout: deviceCfg.ShutdownTimeout,
+		},
 	}
 
-	errCh := make(chan error, 2)
-	go func() {
-		slog.Info("agent gateway listening", "addr", agentHTTP.Addr)
-		errCh <- agentHTTP.ListenAndServe()
-	}()
-	go func() {
-		slog.Info("device gateway listening", "addr", deviceHTTP.Addr)
-		errCh <- deviceHTTP.ListenAndServe()
-	}()
+	errCh := make(chan error, len(services))
+	for _, svc := range services {
+		go func() {
+			slog.Info(svc.name+" listening", "addr", svc.server.Addr)
+			errCh <- svc.server.ListenAndServe()
+		}()
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
+	exitCode := 0
 	select {
 	case <-stop:
-		ctx, cancel := context.WithTimeout(context.Background(), agentCfg.ShutdownTimeout)
-		defer cancel()
-		_ = agentHTTP.Shutdown(ctx)
-		_ = deviceHTTP.Shutdown(ctx)
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server failed", "error", err)
-			ctx, cancel := context.WithTimeout(context.Background(), agentCfg.ShutdownTimeout)
-			defer cancel()
-			_ = agentHTTP.Shutdown(ctx)
-			_ = deviceHTTP.Shutdown(ctx)
-			os.Exit(1)
+			exitCode = 1
 		}
 	}
+
+	for _, svc := range services {
+		ctx, cancel := context.WithTimeout(context.Background(), svc.shutdownTimeout)
+		if err := svc.server.Shutdown(ctx); err != nil {
+			slog.Error(svc.name+" shutdown failed", "error", err)
+			exitCode = 1
+		}
+		cancel()
+	}
+	return exitCode
+}
+
+func newHTTPServer(port string, handler http.Handler, readTimeout, writeTimeout time.Duration) *http.Server {
+	return &http.Server{
+		Addr:         ":" + port,
+		Handler:      handler,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+	}
+}
+
+func envOrDefault(key string, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }

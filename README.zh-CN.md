@@ -79,6 +79,8 @@ lobehub-gateway-go/
 | `WRITE_TIMEOUT` | `30s` | 是 | HTTP 写入超时 |
 | `SHUTDOWN_TIMEOUT` | `10s` | 是 | 优雅关闭超时 |
 
+统一二进制不读取 `PORT`；各服务端口只由 `AGENT_PORT` / `DEVICE_PORT` 控制。独立二进制仍像以前一样使用 `PORT`（默认 8787）。
+
 ## 架构
 
 本仓库按多个 gateway 服务组织。每个 gateway 都位于独立目录中，便于后续继续添加其他 gateway，而不会和现有服务强耦合。根模块提供统一二进制，可以同时运行所有网关。

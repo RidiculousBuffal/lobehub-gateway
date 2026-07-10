@@ -10,10 +10,5 @@ services:
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required}
       JWKS_PUBLIC_KEY: ${JWKS_PUBLIC_KEY:-}
-      AGENT_PORT: "8787"
-      DEVICE_PORT: "8788"
-      LOBE_API_BASE_URL: ${LOBE_API_BASE_URL:-https://app.lobehub.com}
-      READ_TIMEOUT: ${READ_TIMEOUT:-30s}
-      WRITE_TIMEOUT: ${WRITE_TIMEOUT:-30s}
-      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+      LOBE_API_BASE_URL: ${LOBE_API_BASE_URL:-}
     restart: unless-stopped

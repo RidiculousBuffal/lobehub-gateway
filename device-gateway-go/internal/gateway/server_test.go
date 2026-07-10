@@ -21,24 +21,6 @@ import (
 	"time"
 )
 
-func TestConfigFromEnvPortFallback(t *testing.T) {
-	t.Setenv("DEVICE_PORT", "")
-	t.Setenv("PORT", "")
-	if cfg := ConfigFromEnv(); cfg.Port != "8788" {
-		t.Fatalf("expected default port 8788, got %s", cfg.Port)
-	}
-
-	t.Setenv("PORT", "9000")
-	if cfg := ConfigFromEnv(); cfg.Port != "9000" {
-		t.Fatalf("expected PORT fallback to 9000, got %s", cfg.Port)
-	}
-
-	t.Setenv("DEVICE_PORT", "7000")
-	if cfg := ConfigFromEnv(); cfg.Port != "7000" {
-		t.Fatalf("expected DEVICE_PORT to take precedence over PORT, got %s", cfg.Port)
-	}
-}
-
 func TestConfigRequiresServiceTokenAndRejectsEmptyBearer(t *testing.T) {
 	if err := (Config{}).Validate(); err == nil {
 		t.Fatal("expected empty SERVICE_TOKEN config to fail validation")

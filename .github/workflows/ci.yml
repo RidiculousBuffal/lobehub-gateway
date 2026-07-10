@@ -17,43 +17,27 @@ env:
   GO_VERSION: "1.23"
 
 jobs:
-  check-unified:
-    name: Check unified binary
+  check:
+    name: Check ${{ matrix.name }}
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Cache Go build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-unified-${{ hashFiles('**/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-unified-
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Build unified binary
-        run: go build -trimpath -ldflags='-s -w' ./cmd/gateway
-
-      - name: Test root module
-        run: go test ./...
-
-  check-agent-gateway:
-    name: Check agent gateway (agent-gateway-go)
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: unified binary
+            key: unified
+            dir: .
+            target: ./cmd/gateway
+          - name: agent gateway
+            key: agent
+            dir: agent-gateway-go
+            target: ./cmd/agent-gateway-go
+          - name: device gateway
+            key: device
+            dir: device-gateway-go
+            target: ./cmd/device-gateway-go
     defaults:
       run:
-        working-directory: ./agent-gateway-go
+        working-directory: ${{ matrix.dir }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -69,43 +53,12 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-agent-${{ hashFiles('agent-gateway-go/go.mod') }}
+          key: ${{ runner.os }}-go-${{ matrix.key }}-${{ hashFiles('**/go.mod') }}
           restore-keys: |
-            ${{ runner.os }}-go-agent-
+            ${{ runner.os }}-go-${{ matrix.key }}-
 
       - name: Build
-        run: go build -trimpath -ldflags='-s -w' ./cmd/agent-gateway-go
-
-      - name: Test
-        run: go test ./...
-
-  check-device-gateway:
-    name: Check device gateway (device-gateway-go)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./device-gateway-go
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Cache Go build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-device-${{ hashFiles('device-gateway-go/go.mod') }}
-          restore-keys: |
-            ${{ runner.os }}-go-device-
-
-      - name: Build
-        run: go build -trimpath -ldflags='-s -w' ./cmd/device-gateway-go
+        run: go build -trimpath -ldflags='-s -w' ${{ matrix.target }}
 
       - name: Test
         run: go test ./...

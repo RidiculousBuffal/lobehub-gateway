@@ -25,7 +25,7 @@ func (c Config) Validate() error {
 func ConfigFromEnv() Config {
 	return Config{
 		JWKSPublicKey:   os.Getenv("JWKS_PUBLIC_KEY"),
-		Port:            envOrDefault("DEVICE_PORT", envOrDefault("PORT", "8788")),
+		Port:            envOrDefault("PORT", "8787"),
 		ReadTimeout:     durationEnvOrDefault("READ_TIMEOUT", 30*time.Second),
 		ServiceToken:    os.Getenv("SERVICE_TOKEN"),
 		ShutdownTimeout: durationEnvOrDefault("SHUTDOWN_TIMEOUT", 10*time.Second),

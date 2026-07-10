@@ -37,15 +37,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Validate version and target ref
         id: prepare
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_LATEST: ${{ inputs.latest }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/scripts/release/prepare-release.sh
 
       - name: Print release summary
@@ -92,42 +89,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Build unified binary
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: "0"
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-        run: |
-          set -euo pipefail
-          BINARY_NAME="gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          go build -trimpath -ldflags='-s -w' -o "dist/${BINARY_NAME}" ./cmd/gateway
-          ls -al "dist/${BINARY_NAME}"
-
-      - name: Build standalone agent gateway
-        working-directory: ./agent-gateway-go
+      - name: Build binaries
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          BINARY_NAME="agent-gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/agent-gateway-go
-
-      - name: Build standalone device gateway
-        working-directory: ./device-gateway-go
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: "0"
-        run: |
-          set -euo pipefail
-          BINARY_NAME="device-gateway-${{ matrix.os }}-${{ matrix.arch }}"
-          go build -trimpath -ldflags='-s -w' -o "../dist/${BINARY_NAME}" ./cmd/device-gateway-go
+          SUFFIX="${{ matrix.os }}-${{ matrix.arch }}"
+          go build -trimpath -ldflags='-s -w' -o "dist/gateway-${SUFFIX}" ./cmd/gateway
+          (cd agent-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/agent-gateway-${SUFFIX}" ./cmd/agent-gateway-go)
+          (cd device-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/device-gateway-${SUFFIX}" ./cmd/device-gateway-go)
+          ls -al dist/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -146,7 +119,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           ref: ${{ needs.prepare-release.outputs.target_sha }}
 
       - name: Create tag and draft release
@@ -157,13 +129,6 @@ jobs:
           PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
         run: ./.github/scripts/release/create-draft-release.sh
 
-  upload-release-assets:
-    name: Upload assets to release
-    needs:
-      - prepare-release
-      - create-draft-release
-    runs-on: ubuntu-latest
-    steps:
       - name: Download all binary artifacts
         uses: actions/download-artifact@v4
         with:
@@ -171,7 +136,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Upload to release
+      - name: Upload assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -182,15 +147,9 @@ jobs:
           gh release upload "$VERSION" dist/* --clobber
 
   build-docker:
-    name: Build Docker image (${{ matrix.arch }})
-    needs:
-      - prepare-release
+    name: Build and push Docker image
+    needs: prepare-release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch:
-          - amd64
-          - arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -201,24 +160,7 @@ jobs:
         id: registry
         env:
           DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$DOCKER_IMAGE" ]]; then
-            IMAGE="$DOCKER_IMAGE"
-            if [[ "$IMAGE" == */* ]]; then
-              REGISTRY="${IMAGE%%/*}"
-              if [[ ! "$REGISTRY" =~ \. ]] && [[ ! "$REGISTRY" =~ : ]]; then
-                REGISTRY="docker.io"
-              fi
-            else
-              REGISTRY="docker.io"
-            fi
-          else
-            IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-            REGISTRY="ghcr.io"
-          fi
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+        run: ./.github/scripts/release/resolve-docker-image.sh
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -230,78 +172,23 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME || github.actor }}
           password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
 
-      - name: Build and push arch-specific image
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           push: true
-          platforms: linux/${{ matrix.arch }}
-          build-args: |
-            GOARCH=${{ matrix.arch }}
-          tags: ${{ steps.registry.outputs.image }}:${{ needs.prepare-release.outputs.version }}-${{ matrix.arch }}
-
-  merge-docker:
-    name: Merge Docker multi-arch manifest
-    needs:
-      - prepare-release
-      - build-docker
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine registry and image
-        id: registry
-        env:
-          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$DOCKER_IMAGE" ]]; then
-            IMAGE="$DOCKER_IMAGE"
-            if [[ "$IMAGE" == */* ]]; then
-              REGISTRY="${IMAGE%%/*}"
-              if [[ ! "$REGISTRY" =~ \. ]] && [[ ! "$REGISTRY" =~ : ]]; then
-                REGISTRY="docker.io"
-              fi
-            else
-              REGISTRY="docker.io"
-            fi
-          else
-            IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-            REGISTRY="ghcr.io"
-          fi
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
-
-      - name: Login to registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ steps.registry.outputs.registry }}
-          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
-          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
-
-      - name: Create multi-arch manifest
-        env:
-          IMAGE: ${{ steps.registry.outputs.image }}
-          VERSION: ${{ needs.prepare-release.outputs.version }}
-          PUBLISH_LATEST: ${{ needs.prepare-release.outputs.publish_latest }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create \
-            -t "$IMAGE:$VERSION" \
-            "$IMAGE:$VERSION-amd64" \
-            "$IMAGE:$VERSION-arm64"
-          if [[ "$PUBLISH_LATEST" == "true" ]]; then
-            docker buildx imagetools create \
-              -t "$IMAGE:latest" \
-              "$IMAGE:$VERSION-amd64" \
-              "$IMAGE:$VERSION-arm64"
-          fi
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.registry.outputs.image }}:${{ needs.prepare-release.outputs.version }}
+            ${{ needs.prepare-release.outputs.publish_latest == 'true' && format('{0}:latest', steps.registry.outputs.image) || '' }}
 
   publish-release:
     name: Publish release
     needs:
       - prepare-release
-      - upload-release-assets
-      - merge-docker
+      - create-draft-release
+      - build-docker
     runs-on: ubuntu-latest
     steps:
       - name: Set release to published
@@ -312,13 +199,6 @@ jobs:
           PUBLISH_LATEST: ${{ needs.prepare-release.outputs.publish_latest }}
         run: |
           set -euo pipefail
-          case "$PUBLISH_LATEST" in
-            true | false) ;;
-            *)
-              echo "::error::PUBLISH_LATEST must be true or false, got $PUBLISH_LATEST"
-              exit 1
-              ;;
-          esac
           RELEASE_ID="$(gh release view "$VERSION" --json databaseId --jq .databaseId)"
           gh api --method PATCH "repos/{owner}/{repo}/releases/$RELEASE_ID" \
             -F draft=false \

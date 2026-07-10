@@ -31,7 +31,7 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `8788` | HTTP 监听端口。设置 `DEVICE_PORT` 时优先使用（供统一二进制使用）。 |
+| `PORT` | `8787` | HTTP 监听端口。 |
 | `SERVICE_TOKEN` | 必填 | `/api/device/*` 与 WebSocket service-token 认证共用的服务令牌。未设置时进程会拒绝启动。 |
 | `JWKS_PUBLIC_KEY` | 空 | 包含 RS256 公钥的 JWKS JSON，用于 WebSocket JWT 认证。 |
 | `READ_TIMEOUT` | `30s` | Go HTTP 服务器读取超时时间。 |
@@ -50,14 +50,14 @@ SERVICE_TOKEN=dev-secret go run ./cmd/device-gateway-go
 然后为 LobeHub Server 配置：
 
 ```bash
-DEVICE_GATEWAY_URL=http://localhost:8788
+DEVICE_GATEWAY_URL=http://localhost:8787
 DEVICE_GATEWAY_SERVICE_TOKEN=dev-secret
 ```
 
 设备可以通过以下方式连接：
 
 ```bash
-lh connect --gateway http://localhost:8788
+lh connect --gateway http://localhost:8787
 ```
 
 桌面客户端也应使用相同的 gateway URL。
@@ -68,7 +68,7 @@ lh connect --gateway http://localhost:8788
 
 ```bash
 docker build -f device-gateway-go/Dockerfile -t lobehub-device-gateway-go device-gateway-go
-docker run --rm -p 8788:8788 -e SERVICE_TOKEN=dev-secret lobehub-device-gateway-go
+docker run --rm -p 8787:8787 -e SERVICE_TOKEN=dev-secret lobehub-device-gateway-go
 ```
 
 ## 反向代理说明
@@ -79,7 +79,7 @@ Nginx location 示例：
 
 ```nginx
 location / {
-  proxy_pass http://127.0.0.1:8788;
+  proxy_pass http://127.0.0.1:8787;
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
@@ -91,7 +91,7 @@ Caddy site 示例：
 
 ```caddyfile
 gateway.example.com {
-  reverse_proxy 127.0.0.1:8788
+  reverse_proxy 127.0.0.1:8787
 }
 ```
 

@@ -29,7 +29,7 @@ func ConfigFromEnv() Config {
 	return Config{
 		JWKSPublicKey:   os.Getenv("JWKS_PUBLIC_KEY"),
 		LobeAPIBaseURL:  envOrDefault("LOBE_API_BASE_URL", defaultLobeAPIBaseURL),
-		Port:            envOrDefault("AGENT_PORT", envOrDefault("PORT", "8787")),
+		Port:            envOrDefault("PORT", "8787"),
 		ReadTimeout:     durationEnvOrDefault("READ_TIMEOUT", 30*time.Second),
 		ServiceToken:    os.Getenv("SERVICE_TOKEN"),
 		ShutdownTimeout: durationEnvOrDefault("SHUTDOWN_TIMEOUT", 10*time.Second),

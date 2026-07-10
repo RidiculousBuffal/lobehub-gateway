@@ -79,6 +79,8 @@ Each sub-project remains an independent Go module and can be built/tested on its
 | `WRITE_TIMEOUT` | `30s` | Yes | HTTP write timeout |
 | `SHUTDOWN_TIMEOUT` | `10s` | Yes | Graceful shutdown timeout |
 
+The unified binary does not read `PORT`; each service's port is controlled only by `AGENT_PORT` / `DEVICE_PORT`. The standalone binaries keep using `PORT` (default 8787) as before.
+
 ## Architecture
 
 This repository is organized as a collection of gateway services. Each gateway lives in its own directory so more gateway implementations can be added without coupling them to the existing services. The root module provides a unified binary that runs all gateways together.
