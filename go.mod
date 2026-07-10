@@ -1,6 +1,6 @@
 module github.com/lobehub/lobehub/apps/gateway-go
 
-go 1.23
+go 1.26
 
 require (
 	github.com/lobehub/lobehub/apps/agent-gateway-go v0.0.0-00010101000000-000000000000

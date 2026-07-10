@@ -87,7 +87,12 @@ func newServices(configs gatewayConfigs) []service {
 }
 
 func newService(name, port string, handler http.Handler, readTimeout, writeTimeout time.Duration) service {
-	server := newHTTPServer(port, handler, readTimeout, writeTimeout)
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      handler,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+	}
 	return service{
 		name:     name,
 		addr:     server.Addr,
@@ -146,15 +151,6 @@ func shutdownServices(services []service, timeout time.Duration) bool {
 		}
 	}
 	return failed
-}
-
-func newHTTPServer(port string, handler http.Handler, readTimeout, writeTimeout time.Duration) *http.Server {
-	return &http.Server{
-		Addr:         ":" + port,
-		Handler:      handler,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-	}
 }
 
 func envOrDefault(key string, fallback string) string {
