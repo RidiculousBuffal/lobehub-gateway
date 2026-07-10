@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.23"
+  GO_VERSION: "1.26"
 
 jobs:
   prepare-release:
@@ -205,5 +205,5 @@ jobs:
           RELEASE_ID="$(gh release view "$VERSION" --json databaseId --jq .databaseId)"
           gh api --method PATCH "repos/{owner}/{repo}/releases/$RELEASE_ID" \
             -F draft=false \
-            -F "make_latest=$PUBLISH_LATEST" \
+            -f "make_latest=$PUBLISH_LATEST" \
             --silent
