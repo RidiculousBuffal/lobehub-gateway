@@ -32,15 +32,93 @@ The alignment target does not include deliberately excluded platform surfaces: a
 | [`device-gateway-go`](./device-gateway-go/README.md) | Implemented | Device gateway for routing LobeHub device connections, status queries, tool calls, system information, and agent-run requests. |
 | [`agent-gateway-go`](./agent-gateway-go/README.md) | Implemented | Agent gateway for relaying browser WebSocket sessions and server-pushed agent events. |
 
-## Architecture
+## Unified Binary
 
-This repository is organized as a collection of gateway services. Each gateway lives in its own directory so more gateway implementations can be added without coupling them to the existing services.
+The root module (`go.mod`) provides a unified entry point that starts both gateway services in a single process:
 
 ```text
 lobehub-gateway-go/
-  device-gateway-go/
+  go.mod                          # umbrella module with replace directives
+  cmd/gateway/main.go             # unified entry: runs agent + device simultaneously
   agent-gateway-go/
+    gateway.go                    # facade re-exporting internal/gateway symbols
+    go.mod                        # standalone module (unchanged)
+    internal/gateway/
+  device-gateway-go/
+    gateway.go                    # facade re-exporting internal/gateway symbols
+    go.mod                        # standalone module (unchanged)
+    internal/gateway/
 ```
+
+Each sub-project remains an independent Go module and can be built/tested on its own. The root module uses `replace` directives to import the sub-modules via facade files (`gateway.go`) that re-export the internal package symbols.
+
+### Build & Run
+
+```bash
+# Build the unified binary
+ go build -o gateway ./cmd/gateway
+
+# Run both services
+ SERVICE_TOKEN=your-token ./gateway
+
+# Defaults: agent on :8787, device on :8788
+# Override ports via env vars
+ AGENT_PORT=9000 DEVICE_PORT=9001 SERVICE_TOKEN=your-token ./gateway
+```
+
+### Environment Variables
+
+| Variable | Default | Shared | Description |
+| --- | --- | --- | --- |
+| `SERVICE_TOKEN` | — | Yes | Service auth token (required) |
+| `JWKS_PUBLIC_KEY` | — | Yes | JWKS public key for JWT verification |
+| `LOBE_API_BASE_URL` | `https://app.lobehub.com` | Agent only | LobeHub API base URL |
+| `AGENT_PORT` | `8787` | Agent only | Agent gateway listen port |
+| `DEVICE_PORT` | `8788` | Device only | Device gateway listen port |
+| `READ_TIMEOUT` | `30s` | Yes | HTTP read timeout |
+| `WRITE_TIMEOUT` | `30s` | Yes | HTTP write timeout |
+| `SHUTDOWN_TIMEOUT` | `10s` | Yes | Graceful shutdown timeout |
+
+The unified binary does not read `PORT`; each service's port is controlled only by `AGENT_PORT` / `DEVICE_PORT`. The standalone binaries keep using `PORT` (default 8787) as before.
+
+### Release Artifacts
+
+Linux releases provide the unified binary and both standalone binaries for amd64 and arm64:
+
+```text
+gateway-linux-amd64
+agent-gateway-go-linux-amd64
+device-gateway-go-linux-amd64
+```
+
+Replace `amd64` with `arm64` for ARM systems. Standalone release asset names include the `-go` component.
+
+### Docker
+
+Build and run the unified image locally:
+
+```bash
+docker build -f docker/Dockerfile -t lobehub-gateway-go .
+docker run --rm \
+  -p 8787:8787 \
+  -p 8788:8788 \
+  -e SERVICE_TOKEN=your-token \
+  lobehub-gateway-go
+```
+
+Or start the provided Compose service:
+
+```bash
+SERVICE_TOKEN=your-token docker compose -f docker/docker-compose.yml up -d --build
+```
+
+The Compose file uses the unified binary's default listener ports and forwards `SERVICE_TOKEN`, `JWKS_PUBLIC_KEY`, and `LOBE_API_BASE_URL`. To use custom listener ports or timeout values, add the corresponding variables from the table above to the Compose service's `environment` section and update its `ports` mappings when changing `AGENT_PORT` or `DEVICE_PORT`.
+
+The CD workflow publishes a multi-architecture image for linux/amd64 and linux/arm64. By default it is published as `ghcr.io/lobehub/lobehub-gateway:<version>`; repository maintainers can override the destination with the `DOCKER_IMAGE` Actions secret. Stable releases selected as the default version also publish the `latest` tag.
+
+## Architecture
+
+This repository is organized as a collection of gateway services. Each gateway lives in its own directory so more gateway implementations can be added without coupling them to the existing services. The root module provides a unified binary that runs all gateways together.
 
 The current implementation style is intentionally minimal: state is held in memory, services run as ordinary HTTP/WebSocket servers, and deployment can be handled by systemd, Docker, Kubernetes, or any other process manager.
 
@@ -60,11 +138,23 @@ Because this repository targets a single gateway instance, it does not provide d
 
 ## Development
 
-Enter a gateway directory before running commands:
+### Unified binary
 
 ```bash
-cd device-gateway-go
-go test ./...
+# Build
+ go build -o gateway ./cmd/gateway
+
+# Test root module (unified binary)
+ go test ./...
+```
+
+### Individual gateways
+
+Each gateway remains a standalone module and can be built/tested independently:
+
+```bash
+cd agent-gateway-go && go test ./...
+cd device-gateway-go && go test ./...
 ```
 
 See each gateway README for service-specific configuration, API routes, and local run instructions.

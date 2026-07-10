@@ -1,0 +1,9 @@
+.git
+.github
+.claude
+docs
+docker
+dist
+gateway
+gateway-*
+*.md
