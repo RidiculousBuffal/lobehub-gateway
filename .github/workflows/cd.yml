@@ -99,8 +99,8 @@ jobs:
           set -euo pipefail
           SUFFIX="${{ matrix.os }}-${{ matrix.arch }}"
           go build -trimpath -ldflags='-s -w' -o "dist/gateway-${SUFFIX}" ./cmd/gateway
-          (cd agent-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/agent-gateway-${SUFFIX}" ./cmd/agent-gateway-go)
-          (cd device-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/device-gateway-${SUFFIX}" ./cmd/device-gateway-go)
+          (cd agent-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/agent-gateway-go-${SUFFIX}" ./cmd/agent-gateway-go)
+          (cd device-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/device-gateway-go-${SUFFIX}" ./cmd/device-gateway-go)
           ls -al dist/
 
       - name: Upload artifacts

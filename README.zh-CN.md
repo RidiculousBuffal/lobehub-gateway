@@ -81,6 +81,41 @@ lobehub-gateway-go/
 
 统一二进制不读取 `PORT`；各服务端口只由 `AGENT_PORT` / `DEVICE_PORT` 控制。独立二进制仍像以前一样使用 `PORT`（默认 8787）。
 
+### Release 产物
+
+Linux Release 为 amd64 和 arm64 提供统一二进制及两个独立二进制：
+
+```text
+gateway-linux-amd64
+agent-gateway-go-linux-amd64
+device-gateway-go-linux-amd64
+```
+
+ARM 系统请将 `amd64` 替换为 `arm64`。独立二进制的 Release 产物名称包含 `-go`。
+
+### Docker
+
+在本地构建并运行统一镜像：
+
+```bash
+docker build -f docker/Dockerfile -t lobehub-gateway-go .
+docker run --rm \
+  -p 8787:8787 \
+  -p 8788:8788 \
+  -e SERVICE_TOKEN=your-token \
+  lobehub-gateway-go
+```
+
+也可以启动仓库提供的 Compose 服务：
+
+```bash
+SERVICE_TOKEN=your-token docker compose -f docker/docker-compose.yml up -d --build
+```
+
+Compose 文件使用统一二进制的默认监听端口，并透传 `SERVICE_TOKEN`、`JWKS_PUBLIC_KEY` 和 `LOBE_API_BASE_URL`。如需使用自定义监听端口或超时，请在 Compose 服务的 `environment` 中添加上表对应变量；修改 `AGENT_PORT` 或 `DEVICE_PORT` 时还需同步更新 `ports` 映射。
+
+CD 工作流会发布 linux/amd64 和 linux/arm64 多架构镜像。默认地址为 `ghcr.io/lobehub/lobehub-gateway:<version>`；仓库维护者可以通过 Actions secret `DOCKER_IMAGE` 覆盖目标地址。被选为默认版本的稳定 Release 还会发布 `latest` 标签。
+
 ## 架构
 
 本仓库按多个 gateway 服务组织。每个 gateway 都位于独立目录中，便于后续继续添加其他 gateway，而不会和现有服务强耦合。根模块提供统一二进制，可以同时运行所有网关。

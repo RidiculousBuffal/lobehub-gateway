@@ -81,6 +81,41 @@ Each sub-project remains an independent Go module and can be built/tested on its
 
 The unified binary does not read `PORT`; each service's port is controlled only by `AGENT_PORT` / `DEVICE_PORT`. The standalone binaries keep using `PORT` (default 8787) as before.
 
+### Release Artifacts
+
+Linux releases provide the unified binary and both standalone binaries for amd64 and arm64:
+
+```text
+gateway-linux-amd64
+agent-gateway-go-linux-amd64
+device-gateway-go-linux-amd64
+```
+
+Replace `amd64` with `arm64` for ARM systems. Standalone release asset names include the `-go` component.
+
+### Docker
+
+Build and run the unified image locally:
+
+```bash
+docker build -f docker/Dockerfile -t lobehub-gateway-go .
+docker run --rm \
+  -p 8787:8787 \
+  -p 8788:8788 \
+  -e SERVICE_TOKEN=your-token \
+  lobehub-gateway-go
+```
+
+Or start the provided Compose service:
+
+```bash
+SERVICE_TOKEN=your-token docker compose -f docker/docker-compose.yml up -d --build
+```
+
+The Compose file uses the unified binary's default listener ports and forwards `SERVICE_TOKEN`, `JWKS_PUBLIC_KEY`, and `LOBE_API_BASE_URL`. To use custom listener ports or timeout values, add the corresponding variables from the table above to the Compose service's `environment` section and update its `ports` mappings when changing `AGENT_PORT` or `DEVICE_PORT`.
+
+The CD workflow publishes a multi-architecture image for linux/amd64 and linux/arm64. By default it is published as `ghcr.io/lobehub/lobehub-gateway:<version>`; repository maintainers can override the destination with the `DOCKER_IMAGE` Actions secret. Stable releases selected as the default version also publish the `latest` tag.
+
 ## Architecture
 
 This repository is organized as a collection of gateway services. Each gateway lives in its own directory so more gateway implementations can be added without coupling them to the existing services. The root module provides a unified binary that runs all gateways together.
