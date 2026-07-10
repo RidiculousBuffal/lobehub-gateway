@@ -43,6 +43,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_LATEST: ${{ inputs.latest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./.github/scripts/release/prepare-release.sh
 
       - name: Print release summary
@@ -148,7 +149,9 @@ jobs:
 
   build-docker:
     name: Build and push Docker image
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - create-draft-release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

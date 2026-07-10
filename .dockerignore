@@ -4,4 +4,6 @@
 docs
 docker
 dist
+gateway
+gateway-*
 *.md

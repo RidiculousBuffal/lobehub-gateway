@@ -15,9 +15,20 @@ import (
 )
 
 type service struct {
-	name            string
-	server          *http.Server
-	shutdownTimeout time.Duration
+	name     string
+	addr     string
+	listen   func() error
+	shutdown func(context.Context) error
+}
+
+type serviceResult struct {
+	name string
+	err  error
+}
+
+type gatewayConfigs struct {
+	agent  agentgateway.Config
+	device devicegateway.Config
 }
 
 func main() {
@@ -25,64 +36,116 @@ func main() {
 }
 
 func run() int {
+	configs, err := configsFromEnv()
+	if err != nil {
+		slog.Error("invalid configuration", "error", err)
+		return 1
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+
+	return runServices(newServices(configs), stop, configs.agent.ShutdownTimeout)
+}
+
+func configsFromEnv() (gatewayConfigs, error) {
 	// The unified binary ignores PORT: each service gets its own variable so
 	// the two listeners cannot collide in a single process.
 	agentCfg := agentgateway.ConfigFromEnv()
 	agentCfg.Port = envOrDefault("AGENT_PORT", "8787")
 	if err := agentCfg.Validate(); err != nil {
-		slog.Error("invalid agent configuration", "error", err)
-		return 1
+		return gatewayConfigs{}, errors.New("invalid agent configuration: " + err.Error())
 	}
+
 	deviceCfg := devicegateway.ConfigFromEnv()
 	deviceCfg.Port = envOrDefault("DEVICE_PORT", "8788")
 	if err := deviceCfg.Validate(); err != nil {
-		slog.Error("invalid device configuration", "error", err)
-		return 1
+		return gatewayConfigs{}, errors.New("invalid device configuration: " + err.Error())
 	}
 
-	services := []service{
-		{
-			name:            "agent gateway",
-			server:          newHTTPServer(agentCfg.Port, agentgateway.NewServer(agentCfg).Routes(), agentCfg.ReadTimeout, agentCfg.WriteTimeout),
-			shutdownTimeout: agentCfg.ShutdownTimeout,
-		},
-		{
-			name:            "device gateway",
-			server:          newHTTPServer(deviceCfg.Port, devicegateway.NewServer(deviceCfg).Routes(), deviceCfg.ReadTimeout, deviceCfg.WriteTimeout),
-			shutdownTimeout: deviceCfg.ShutdownTimeout,
-		},
-	}
+	return gatewayConfigs{agent: agentCfg, device: deviceCfg}, nil
+}
 
-	errCh := make(chan error, len(services))
+func newServices(configs gatewayConfigs) []service {
+	return []service{
+		newService(
+			"agent gateway",
+			configs.agent.Port,
+			agentgateway.NewServer(configs.agent).Routes(),
+			configs.agent.ReadTimeout,
+			configs.agent.WriteTimeout,
+		),
+		newService(
+			"device gateway",
+			configs.device.Port,
+			devicegateway.NewServer(configs.device).Routes(),
+			configs.device.ReadTimeout,
+			configs.device.WriteTimeout,
+		),
+	}
+}
+
+func newService(name, port string, handler http.Handler, readTimeout, writeTimeout time.Duration) service {
+	server := newHTTPServer(port, handler, readTimeout, writeTimeout)
+	return service{
+		name:     name,
+		addr:     server.Addr,
+		listen:   server.ListenAndServe,
+		shutdown: server.Shutdown,
+	}
+}
+
+func runServices(services []service, stop <-chan os.Signal, shutdownTimeout time.Duration) int {
+	errCh := make(chan serviceResult, len(services))
 	for _, svc := range services {
 		go func() {
-			slog.Info(svc.name+" listening", "addr", svc.server.Addr)
-			errCh <- svc.server.ListenAndServe()
+			slog.Info(svc.name+" listening", "addr", svc.addr)
+			errCh <- serviceResult{name: svc.name, err: svc.listen()}
 		}()
 	}
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	exitCode := 0
 	select {
 	case <-stop:
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server failed", "error", err)
+	case result := <-errCh:
+		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			slog.Error(result.name+" failed", "error", result.err)
 			exitCode = 1
 		}
 	}
 
-	for _, svc := range services {
-		ctx, cancel := context.WithTimeout(context.Background(), svc.shutdownTimeout)
-		if err := svc.server.Shutdown(ctx); err != nil {
-			slog.Error(svc.name+" shutdown failed", "error", err)
-			exitCode = 1
-		}
-		cancel()
+	if shutdownServices(services, shutdownTimeout) {
+		exitCode = 1
 	}
 	return exitCode
+}
+
+func shutdownServices(services []service, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	results := make(chan serviceResult, len(services))
+	for _, svc := range services {
+		go func() {
+			results <- serviceResult{name: svc.name, err: svc.shutdown(ctx)}
+		}()
+	}
+
+	failed := false
+	for range services {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				slog.Error(result.name+" shutdown failed", "error", result.err)
+				failed = true
+			}
+		case <-ctx.Done():
+			slog.Error("gateway shutdown timed out", "error", ctx.Err())
+			return true
+		}
+	}
+	return failed
 }
 
 func newHTTPServer(port string, handler http.Handler, readTimeout, writeTimeout time.Duration) *http.Server {

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+NOTES_FILE="docs/release_notes/${VERSION}.md"
+if [[ ! -f "$NOTES_FILE" ]]; then
+  echo "::error::Release notes file does not exist: $NOTES_FILE"
+  exit 1
+fi
+
 git fetch --force --tags origin
 EXISTING_TAG_SHA="$(git rev-parse --verify --quiet "refs/tags/$VERSION^{}" || true)"
 if [[ -n "$EXISTING_TAG_SHA" ]]; then
@@ -29,12 +35,6 @@ if RELEASE_JSON="$(gh release view "$VERSION" --json isDraft,isPrerelease 2>/dev
   fi
   echo "::notice::Draft release $VERSION already exists, reusing it"
 else
-  NOTES_FILE="docs/release_notes/${VERSION}.md"
-  if [[ ! -f "$NOTES_FILE" ]]; then
-    echo "::error::Release notes file does not exist: $NOTES_FILE"
-    exit 1
-  fi
-
   RELEASE_ARGS=(
     --draft
     --verify-tag
