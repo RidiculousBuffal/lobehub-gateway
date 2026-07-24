@@ -1,0 +1,25 @@
+# Optional upstream reference checkouts
+/device-gateway/
+/agent-gateway/
+
+# Unified gateway binaries
+/gateway
+/gateway-linux-*
+/gateway-darwin-*
+/gateway-windows-*
+
+# Service binaries
+/agent-gateway-go/agent-gateway-go
+/agent-gateway-go/agent-gateway-go-*
+/device-gateway-go/device-gateway-go
+/device-gateway-go/device-gateway-go-*
+
+# Go test and coverage output
+*.test
+*.out
+coverage.*
+
+# Local environment files
+.env
+.env.*
+!.env.example

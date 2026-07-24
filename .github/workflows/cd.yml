@@ -1,0 +1,209 @@
+name: Gateway CD
+run-name: CD ${{ inputs.version }}${{ inputs.latest && ' (latest)' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.1.0-rc.1 or 0.1.0"
+        required: true
+        type: string
+      latest:
+        description: "Mark as default version: tag GitHub Release as Latest"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: cd-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  prepare-release:
+    name: Prepare release context
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+      target_sha: ${{ steps.prepare.outputs.target_sha }}
+      prerelease: ${{ steps.prepare.outputs.prerelease }}
+      publish_latest: ${{ steps.prepare.outputs.publish_latest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate version and target ref
+        id: prepare
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_LATEST: ${{ inputs.latest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/scripts/release/prepare-release.sh
+
+      - name: Print release summary
+        run: |
+          {
+            echo "## LobeHub Gateway Go Release"
+            echo
+            echo "- Version: \`${{ steps.prepare.outputs.version }}\`"
+            echo "- Workflow ref: \`${{ github.ref_name }}\`"
+            echo "- Target SHA: \`${{ steps.prepare.outputs.target_sha }}\`"
+            echo "- Prerelease: \`${{ steps.prepare.outputs.prerelease }}\`"
+            echo "- Latest: \`${{ steps.prepare.outputs.publish_latest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-binaries:
+    name: Build binaries (${{ matrix.os }}/${{ matrix.arch }})
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('**/go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-${{ matrix.os }}-${{ matrix.arch }}-
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          SUFFIX="${{ matrix.os }}-${{ matrix.arch }}"
+          go build -trimpath -ldflags='-s -w' -o "dist/gateway-${SUFFIX}" ./cmd/gateway
+          (cd agent-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/agent-gateway-go-${SUFFIX}" ./cmd/agent-gateway-go)
+          (cd device-gateway-go && go build -trimpath -ldflags='-s -w' -o "../dist/device-gateway-go-${SUFFIX}" ./cmd/device-gateway-go)
+          ls -al dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  create-draft-release:
+    name: Create tag and draft release
+    needs:
+      - prepare-release
+      - build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Create tag and draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+          PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
+        run: ./.github/scripts/release/create-draft-release.sh
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -al dist/
+          gh release upload "$VERSION" dist/* --clobber
+
+  build-docker:
+    name: Build and push Docker image
+    needs:
+      - prepare-release
+      - create-draft-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Determine registry and image
+        id: registry
+        env:
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+        run: ./.github/scripts/release/resolve-docker-image.sh
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.registry.outputs.registry }}
+          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
+          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.registry.outputs.image }}:${{ needs.prepare-release.outputs.version }}
+            ${{ needs.prepare-release.outputs.publish_latest == 'true' && format('{0}:latest', steps.registry.outputs.image) || '' }}
+
+  publish-release:
+    name: Publish release
+    needs:
+      - prepare-release
+      - create-draft-release
+      - build-docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set release to published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          PUBLISH_LATEST: ${{ needs.prepare-release.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          RELEASE_ID="$(gh release view "$VERSION" --json databaseId --jq .databaseId)"
+          gh api --method PATCH "repos/{owner}/{repo}/releases/$RELEASE_ID" \
+            -F draft=false \
+            -f "make_latest=$PUBLISH_LATEST" \
+            --silent

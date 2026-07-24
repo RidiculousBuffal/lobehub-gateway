@@ -1,0 +1,64 @@
+name: Gateway CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  check:
+    name: Check ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: unified binary
+            key: unified
+            dir: .
+            target: ./cmd/gateway
+          - name: agent gateway
+            key: agent
+            dir: agent-gateway-go
+            target: ./cmd/agent-gateway-go
+          - name: device gateway
+            key: device
+            dir: device-gateway-go
+            target: ./cmd/device-gateway-go
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.key }}-${{ hashFiles('**/go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.key }}-
+
+      - name: Build
+        run: go build -trimpath -ldflags='-s -w' ${{ matrix.target }}
+
+      - name: Test
+        run: go test ./...
