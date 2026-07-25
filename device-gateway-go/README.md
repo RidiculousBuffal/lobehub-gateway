@@ -35,7 +35,7 @@ All `/api/device/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>` an
 | `SERVICE_TOKEN` | required | Shared service token for `/api/device/*` and WebSocket service-token auth. The process refuses to start without it. |
 | `JWKS_PUBLIC_KEY` | empty | JWKS JSON containing an RS256 public key for JWT WebSocket auth. |
 | `READ_TIMEOUT` | `30s` | Go HTTP server read timeout. |
-| `WRITE_TIMEOUT` | `30s` | Go HTTP server write timeout. |
+| `WRITE_TIMEOUT` | `1m` | Go HTTP server write timeout. |
 | `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout. |
 
 Protocol-level timeouts intentionally match the Worker implementation: devices must authenticate within 10 seconds and send heartbeats at least every 90 seconds.

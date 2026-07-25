@@ -76,7 +76,7 @@ lobehub-gateway-go/
 | `AGENT_PORT` | `8787` | 仅 Agent | Agent 网关监听端口 |
 | `DEVICE_PORT` | `8788` | 仅 Device | Device 网关监听端口 |
 | `READ_TIMEOUT` | `30s` | 是 | HTTP 读取超时 |
-| `WRITE_TIMEOUT` | `30s` | 是 | HTTP 写入超时 |
+| `WRITE_TIMEOUT` | `1m` | 是 | HTTP 写入超时 |
 | `SHUTDOWN_TIMEOUT` | `10s` | 是 | 优雅关闭超时 |
 
 统一二进制不读取 `PORT`；各服务端口只由 `AGENT_PORT` / `DEVICE_PORT` 控制。独立二进制仍像以前一样使用 `PORT`（默认 8787）。
