@@ -35,7 +35,7 @@
 | `SERVICE_TOKEN` | 必填 | `/api/device/*` 与 WebSocket service-token 认证共用的服务令牌。未设置时进程会拒绝启动。 |
 | `JWKS_PUBLIC_KEY` | 空 | 包含 RS256 公钥的 JWKS JSON，用于 WebSocket JWT 认证。 |
 | `READ_TIMEOUT` | `30s` | Go HTTP 服务器读取超时时间。 |
-| `WRITE_TIMEOUT` | `30s` | Go HTTP 服务器写入超时时间。 |
+| `WRITE_TIMEOUT` | `1m` | Go HTTP 服务器写入超时时间。 |
 | `SHUTDOWN_TIMEOUT` | `10s` | 优雅关闭超时时间。 |
 
 协议级超时刻意与 Worker 实现保持一致：设备必须在 10 秒内完成认证，并且至少每 90 秒发送一次心跳。

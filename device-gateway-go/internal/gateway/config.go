@@ -29,7 +29,7 @@ func ConfigFromEnv() Config {
 		ReadTimeout:     durationEnvOrDefault("READ_TIMEOUT", 30*time.Second),
 		ServiceToken:    os.Getenv("SERVICE_TOKEN"),
 		ShutdownTimeout: durationEnvOrDefault("SHUTDOWN_TIMEOUT", 10*time.Second),
-		WriteTimeout:    durationEnvOrDefault("WRITE_TIMEOUT", 30*time.Second),
+		WriteTimeout:    durationEnvOrDefault("WRITE_TIMEOUT", time.Minute),
 	}
 }
 

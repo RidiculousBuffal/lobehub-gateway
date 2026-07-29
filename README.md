@@ -76,7 +76,7 @@ Each sub-project remains an independent Go module and can be built/tested on its
 | `AGENT_PORT` | `8787` | Agent only | Agent gateway listen port |
 | `DEVICE_PORT` | `8788` | Device only | Device gateway listen port |
 | `READ_TIMEOUT` | `30s` | Yes | HTTP read timeout |
-| `WRITE_TIMEOUT` | `30s` | Yes | HTTP write timeout |
+| `WRITE_TIMEOUT` | `1m` | Yes | HTTP write timeout |
 | `SHUTDOWN_TIMEOUT` | `10s` | Yes | Graceful shutdown timeout |
 
 The unified binary does not read `PORT`; each service's port is controlled only by `AGENT_PORT` / `DEVICE_PORT`. The standalone binaries keep using `PORT` (default 8787) as before.

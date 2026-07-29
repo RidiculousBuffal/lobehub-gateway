@@ -44,7 +44,7 @@
 | `JWKS_PUBLIC_KEY` | 空 | 包含 RS256 公钥的 JWKS JSON,用于 WebSocket JWT 认证。 |
 | `LOBE_API_BASE_URL` | `https://app.lobehub.com` | 用于 abandoned operation reconciliation、tool-result forwarding 等后端回调的 LobeHub API 基础地址。自托管部署需指向你自己的 LobeHub 实例。 |
 | `READ_TIMEOUT` | `30s` | Go HTTP 服务器读取超时时间。 |
-| `WRITE_TIMEOUT` | `30s` | Go HTTP 服务器写入超时时间。 |
+| `WRITE_TIMEOUT` | `1m` | Go HTTP 服务器写入超时时间。 |
 | `SHUTDOWN_TIMEOUT` | `10s` | 优雅关闭超时时间。 |
 
 ## 本地运行

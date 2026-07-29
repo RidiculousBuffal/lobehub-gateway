@@ -44,7 +44,7 @@ All `/api/operations/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>
 | `JWKS_PUBLIC_KEY` | empty | JWKS JSON containing an RS256 public key for JWT WebSocket auth. |
 | `LOBE_API_BASE_URL` | `https://app.lobehub.com` | LobeHub API base URL used for backend callbacks such as abandoned-operation reconciliation and tool-result forwarding. Point this at your own LobeHub instance for self-hosted deployments. |
 | `READ_TIMEOUT` | `30s` | Go HTTP server read timeout. |
-| `WRITE_TIMEOUT` | `30s` | Go HTTP server write timeout. |
+| `WRITE_TIMEOUT` | `1m` | Go HTTP server write timeout. |
 | `SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown timeout. |
 
 ## Run locally
